@@ -12,7 +12,7 @@
  * ============================================================
  */
 
-var BACKEND_VERSION = '1.0.0';
+var BACKEND_VERSION = '1.2.0';
 
 var SHEETS = {
   CHANNELS: 'CHANNEL REPORT',
@@ -23,18 +23,20 @@ var SHEETS = {
   YT_CHANNELS: 'YT CHANNELS',
   YT_VIDEOS: 'YT VIDEOS',
   YT_HISTORY: 'YT HISTORY',
-  YT_CH_HISTORY: 'YT CHANNEL HISTORY'
+  YT_CH_HISTORY: 'YT CHANNEL HISTORY',
+  PAYROLL: 'PAYROLL'
 };
 
 var HEADERS = {
-  EMPLOYEES: ['NAME', 'ROLE', 'PIN', 'ACTIVE', 'NOTES'],
+  EMPLOYEES: ['NAME', 'ROLE', 'PIN', 'ACTIVE', 'NOTES', 'POSITION'],
   REPORTS: ['ID', 'TIMESTAMP', 'DATE', 'EMPLOYEE', 'CHANNEL', 'DIVISION', 'TASK', 'QTY', 'LINKS', 'NOTES', 'UPDATED BY'],
   CONFIG: ['KEY', 'VALUE', 'KETERANGAN'],
   KPI: ['NAME', 'DIVISION', 'TARGET (BULAN INI)', 'ACTUAL', 'CAPAIAN', 'DISIPLIN LAPORAN', 'SKOR KPI', 'GRADE', 'TARGET HARI INI', 'ACTUAL HARI INI', 'UPDATED'],
   YT_CHANNELS: ['SHEET CHANNEL', 'CHANNEL ID', 'TITLE', 'HANDLE', 'THUMBNAIL', 'SUBSCRIBERS', 'TOTAL VIEWS', 'VIDEOS', 'UPDATED', 'STATUS'],
   YT_VIDEOS: ['VIDEO ID', 'CHANNEL ID', 'TITLE', 'PUBLISHED', 'THUMBNAIL', 'DURATION (s)', 'VIEWS', 'LIKES', 'COMMENTS', 'UPDATED'],
   YT_HISTORY: ['DATE', 'VIDEO ID', 'CHANNEL ID', 'VIEWS'],
-  YT_CH_HISTORY: ['DATE', 'CHANNEL ID', 'SUBSCRIBERS', 'TOTAL VIEWS', 'VIDEOS']
+  YT_CH_HISTORY: ['DATE', 'CHANNEL ID', 'SUBSCRIBERS', 'TOTAL VIEWS', 'VIDEOS'],
+  PAYROLL: ['NAME', 'CATEGORY', 'AMOUNT', 'DUE DAY', 'ACTIVE', 'NOTES']
 };
 
 var DEFAULT_CONFIG = [
@@ -49,8 +51,48 @@ var DEFAULT_CONFIG = [
   ['BACKDATE_DAYS', '3', 'Karyawan boleh mengisi/mengubah laporan sampai N hari ke belakang'],
   ['REPORT_DAYS_LOADED', '120', 'Berapa hari laporan terakhir yang dimuat ke aplikasi'],
   ['YT_SYNC_HOURS', '3', 'Sinkron views YouTube setiap N jam'],
-  ['YT_MAX_VIDEOS', '50', 'Jumlah video terbaru per channel yang dipantau']
+  ['YT_MAX_VIDEOS', '50', 'Jumlah video terbaru per channel yang dipantau'],
+  ['REMINDER_DAYS_BEFORE', '5', 'Email pengingat gajian dikirim H-N sebelum tanggal gajian'],
+  ['REMINDER_EMAILS', '', 'Penerima email pengingat gajian, pisahkan dengan koma. Kosong = email pemilik spreadsheet'],
+  ['REMINDER_HOUR', '8', 'Jam pengiriman email pengingat (0-23, zona waktu TIMEZONE)']
 ];
+
+/**
+ * UPDATE DATA 1.2.0 — diterapkan SEKALI oleh setup().
+ *  - Sheet PAYROLL: gaji manager & biaya tetap (hanya admin yang bisa melihat).
+ *  - Katon pindah tugas: YouTube Music Playlist Creator (City-pop), 2 channel baru, 3 playlist/channel/hari, min. 60 menit.
+ */
+var PAYROLL_SEED = [
+  ['ARYA', 'GAJI', 10000000, 10, true, 'Gaji Manager'],
+  ['ZUL', 'GAJI', 10000000, 10, true, 'Gaji Manager'],
+  ['Sewa ruang kerja', 'BIAYA', 5000000, 10, true, 'Dibayar setiap bulan']
+];
+var KATON_UPDATE = {
+  employee: 'KATON',
+  type: 'STAFF CHANNEL',
+  indicator: 'PLAYLIST',
+  target: 3,
+  minDuration: 60,
+  channels: [
+    { name: 'City-pop Playlist (Korea)', notes: 'YouTube Music Playlist Creator, genre City-pop, untuk pasar Korea. Target 3 video playlist/hari, durasi minimal 1 jam per video. Link channel menyusul.' },
+    { name: 'City-pop Playlist (Jepang)', notes: 'YouTube Music Playlist Creator, genre City-pop, untuk pasar Jepang. Target 3 video playlist/hari, durasi minimal 1 jam per video. Link channel menyusul.' }
+  ],
+  oldNote: 'Dilepas dari KATON (pindah ke City-pop Playlist). Menunggu karyawan baru.'
+};
+
+/**
+ * STRUKTUR TIM — diterapkan SEKALI oleh setup() (versi 1.1.0).
+ * Setelah itu ubah langsung di sheet EMPLOYEES (kolom ROLE & POSITION) atau lewat Admin → Karyawan.
+ *   ROLE     : ADMIN (akses penuh termasuk gaji) / EMPLOYEE
+ *   POSITION : BOSS / MANAGER / STAFF (kosong = STAFF). BOSS & MANAGER tidak masuk peringkat KPI.
+ *   PIN kosong = tidak bisa login.
+ */
+var TEAM_STRUCTURE = [
+  { name: 'ARYA', role: 'ADMIN', position: 'MANAGER', login: true, notes: 'Manager Bitbuzz Production' },
+  { name: 'ZUL', role: 'ADMIN', position: 'MANAGER', login: true, notes: 'Manager Bitbuzz Production' },
+  { name: 'KIM EUIJONG', role: 'EMPLOYEE', position: 'BOSS', login: false, notes: 'Bos Bitbuzz Production (tanpa akun aplikasi)' }
+];
+var TEAM_MERGE_OWNER_INTO = 'ARYA';
 
 /* =========================== MENU & SETUP =========================== */
 
@@ -60,14 +102,18 @@ function setup() {
   PropertiesService.getScriptProperties().setProperty('SPREADSHEET_ID', ss.getId());
   ensureSheet_(SHEETS.CONFIG, HEADERS.CONFIG);
   ensureConfigDefaults_();
-  ensureSheet_(SHEETS.EMPLOYEES, HEADERS.EMPLOYEES, { textCols: [3] });
+  ensureEmployeeHeader_();
   ensureSheet_(SHEETS.REPORTS, HEADERS.REPORTS, { textCols: [3] });
   ensureSheet_(SHEETS.KPI, HEADERS.KPI);
   ensureSheet_(SHEETS.YT_CHANNELS, HEADERS.YT_CHANNELS);
   ensureSheet_(SHEETS.YT_VIDEOS, HEADERS.YT_VIDEOS);
   ensureSheet_(SHEETS.YT_HISTORY, HEADERS.YT_HISTORY, { textCols: [1, 2] });
   ensureSheet_(SHEETS.YT_CH_HISTORY, HEADERS.YT_CH_HISTORY, { textCols: [1] });
+  ensureSheet_(SHEETS.PAYROLL, HEADERS.PAYROLL);
+  ensureChannelExtraCols_();
   secret_();
+  var teamMsg = applyTeamStructure_();
+  var dataMsg = applyDataUpdateV120_();
   var added = syncEmployees_();
 
   ScriptApp.getProjectTriggers().forEach(function (t) {
@@ -79,10 +125,13 @@ function setup() {
   try { syncYouTube(); } catch (err) { ytMsg = 'GAGAL: ' + err.message; }
   try { cronJob(); } catch (err) { }
 
-  var admin = readEmployees_().filter(function (e) { return e.role === 'ADMIN'; })[0];
+  var admins = readEmployees_().filter(function (e) { return e.role === 'ADMIN' && e.active && e.pin; });
   var msg = 'Setup selesai.\n\n' +
     '• Karyawan baru ditambahkan ke sheet EMPLOYEES: ' + added + '\n' +
-    '• Login admin: ' + (admin ? admin.name + ' / PIN ' + admin.pin : '-') + '\n' +
+    '• Struktur tim: ' + teamMsg + '\n' +
+    '• Update data 1.2.0: ' + dataMsg + '\n' +
+    '• Email pengingat gajian (H-' + (config_().REMINDER_DAYS_BEFORE || 5) + ') ke: ' + reminderRecipients_().join(', ') + '\n' +
+    '• Login admin: ' + (admins.length ? admins.map(function (a) { return a.name + ' / PIN ' + a.pin; }).join(' ; ') : '-') + '\n' +
     '• Sinkron YouTube: ' + ytMsg + '\n\n' +
     'Langkah berikutnya: Deploy → New deployment → Web app (Execute as: Me, Who has access: Anyone). ' +
     'Salin URL /exec ke file config.js aplikasi.';
@@ -96,12 +145,17 @@ function onOpen() {
     .addItem('Hitung ulang KPI & Current Result', 'cronJob')
     .addSeparator()
     .addItem('Lihat PIN admin', 'showAdminInfo')
+    .addItem('Kirim email pengingat gajian (tes)', 'menuTestReminder')
     .addToUi();
 }
 
 function showAdminInfo() {
-  var admins = readEmployees_().filter(function (e) { return e.role === 'ADMIN'; });
+  var admins = readEmployees_().filter(function (e) { return e.role === 'ADMIN' && e.active; });
   notify_(admins.map(function (a) { return a.name + ' → PIN ' + a.pin; }).join('\n') || 'Belum ada admin. Jalankan Setup.');
+}
+
+function menuTestReminder() {
+  try { var r = sendPayrollReminder_(true); notify_('Email tes terkirim ke: ' + r.to.join(', ') + '\nBatch: ' + r.date); } catch (err) { notify_('Gagal: ' + err.message); }
 }
 
 function menuSyncYouTube() {
@@ -113,6 +167,7 @@ function cronJob() {
   syncEmployees_();
   updateCurrentResults_();
   writeKpiSummary_();
+  try { checkPayrollReminder_(); } catch (err) { console.error(err); }
   var cfg = config_();
   var last = Number(PropertiesService.getScriptProperties().getProperty('YT_LAST_SYNC') || 0);
   var every = Math.max(1, Number(cfg.YT_SYNC_HOURS) || 3);
@@ -157,7 +212,8 @@ var PUBLIC_ACTIONS = {
     return {
       company: cfg.COMPANY_NAME,
       backendVersion: BACKEND_VERSION,
-      employees: readEmployees_().filter(function (e) { return e.active && e.pin; }).map(function (e) { return e.name; }).sort()
+      employees: readEmployees_().filter(function (e) { return e.active && e.pin; }).map(function (e) { return e.name; }).sort(),
+      managers: readEmployees_().filter(function (e) { return e.active && e.position === 'MANAGER'; }).map(function (e) { return e.name; })
     };
   },
   login: function (b) { return login_(b.name, b.pin); }
@@ -178,7 +234,10 @@ var ADMIN_ACTIONS = {
   addChannel: function (b) { return addChannel_(b.channel || {}); },
   saveEmployee: function (b) { return saveEmployee_(b.employee || {}); },
   saveConfig: function (b) { return saveConfig_(b.config || {}); },
-  syncYouTube: function () { syncYouTube(); return getYouTube_(); }
+  syncYouTube: function () { syncYouTube(); return getYouTube_(); },
+  savePayrollItem: function (b) { return savePayrollItem_(b.item || {}); },
+  deletePayrollItem: function (b) { return deletePayrollItem_(Number(b.row), b.name); },
+  sendReminderTest: function () { return sendPayrollReminder_(true); }
 };
 
 /* =========================== HELPERS =========================== */
@@ -307,27 +366,48 @@ function verifyToken_(token) {
   return emp;
 }
 
+/** Hanya angka; angka full-width (keyboard Jepang/Korea) diubah ke angka biasa. */
+function digits_(s) {
+  s = String(s == null ? '' : s);
+  try { s = s.normalize('NFKC'); } catch (e) { }
+  return s.replace(/[^0-9]/g, '');
+}
+/** Cocokkan PIN. Toleran terhadap spasi & PIN yang angka 0 di depannya hilang karena sel diketik sebagai angka. */
+function pinMatches_(stored, input) {
+  var a = digits_(stored), b = digits_(input);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  return a.length < b.length && a.replace(/^0+/, '') === b.replace(/^0+/, '');
+}
+
 function login_(name, pin) {
-  name = up_(name); pin = String(pin || '').trim();
+  name = up_(String(name || '').replace(/\s+/g, ' '));
+  pin = digits_(pin);
   if (!name || !pin) throw new Error('Nama dan PIN wajib diisi.');
   var cache = CacheService.getScriptCache();
   var key = 'fail_' + Utilities.base64EncodeWebSafe(name);
   var fails = Number(cache.get(key) || 0);
-  if (fails >= 5) throw new Error('Terlalu banyak percobaan. Coba lagi 15 menit lagi.');
+  var MAX = 5;
+  if (fails >= MAX) throw new Error('Terlalu banyak percobaan PIN salah untuk ' + name + '. Tunggu 15 menit, lalu coba lagi.');
   var emp = findEmployee_(name);
-  if (!emp || !emp.active || String(emp.pin) !== pin) {
+  if (!emp) throw new Error('Nama ' + name + ' tidak ditemukan. Hubungi manager.');
+  if (!emp.active) throw new Error('Akun ' + name + ' nonaktif. Hubungi manager.');
+  if (!emp.pin) throw new Error('Akun ' + name + ' tidak memakai login.');
+  if (!pinMatches_(emp.pin, pin)) {
     cache.put(key, String(fails + 1), 15 * 60);
-    throw new Error('Nama atau PIN salah.');
+    var left = MAX - fails - 1;
+    throw new Error('PIN salah untuk ' + name + '. ' + (left > 0 ? 'Sisa percobaan: ' + left + '.' : 'Akun dikunci 15 menit.'));
   }
   cache.remove(key);
   return { token: makeToken_(emp), user: publicUser_(emp) };
 }
 
-function publicUser_(emp) { return { name: emp.name, role: emp.role }; }
+function publicUser_(emp) { return { name: emp.name, role: emp.role, position: emp.position }; }
 
 function changePin_(user, oldPin, newPin) {
   newPin = String(newPin || '').trim();
-  if (String(oldPin || '').trim() !== String(user.pin)) throw new Error('PIN lama salah.');
+  if (!pinMatches_(user.pin, oldPin)) throw new Error('PIN lama salah.');
+  newPin = digits_(newPin);
   if (!/^\d{4,8}$/.test(newPin)) throw new Error('PIN baru harus 4–8 digit angka.');
   return withLock_(function () {
     var sh = sheet_(SHEETS.EMPLOYEES);
@@ -342,14 +422,15 @@ function changePin_(user, oldPin, newPin) {
 function readEmployees_() {
   var sh = sheet_(SHEETS.EMPLOYEES);
   if (!sh || sh.getLastRow() < 2) return [];
-  return sh.getRange(2, 1, sh.getLastRow() - 1, 5).getValues().map(function (r, i) {
+  return sh.getRange(2, 1, sh.getLastRow() - 1, 6).getValues().map(function (r, i) {
     return {
       row: i + 2,
       name: up_(r[0]),
       role: up_(r[1]) === 'ADMIN' ? 'ADMIN' : 'EMPLOYEE',
       pin: String(r[2]).trim(),
       active: String(r[3]).trim() === '' ? true : bool_(r[3]),
-      notes: String(r[4] || '')
+      notes: String(r[4] || ''),
+      position: normPosition_(r[5])
     };
   }).filter(function (e) { return e.name; });
 }
@@ -368,7 +449,7 @@ function syncEmployees_() {
   var emps = readEmployees_();
   emps.forEach(function (e) { existing[e.name] = true; });
   var rows = [];
-  if (!emps.some(function (e) { return e.role === 'ADMIN'; })) {
+  if (!emps.some(function (e) { return e.role === 'ADMIN' && e.active && e.pin; })) {
     rows.push(['OWNER', 'ADMIN', randomPin_(), true, 'Akun pemilik. Ganti nama/PIN sesukamu.']);
     existing.OWNER = true;
   }
@@ -390,28 +471,77 @@ function saveEmployee_(e) {
   if (!name) throw new Error('Nama wajib diisi.');
   var pin = String(e.pin || '').trim();
   if (pin && !/^\d{4,8}$/.test(pin)) throw new Error('PIN harus 4–8 digit angka.');
+  var canLogin = e.login !== false;
   return withLock_(function () {
-    var sh = ensureSheet_(SHEETS.EMPLOYEES, HEADERS.EMPLOYEES, { textCols: [3] });
+    var sh = ensureEmployeeHeader_();
     var found = findEmployee_(name);
     var role = up_(e.role) === 'ADMIN' ? 'ADMIN' : 'EMPLOYEE';
+    var position = normPosition_(e.position);
     var active = e.active !== false;
+    var finalPin = !canLogin ? '' : (pin || (found && found.pin) || randomPin_());
     if (found) {
-      if (found.role === 'ADMIN' && (role !== 'ADMIN' || !active)) {
-        var admins = readEmployees_().filter(function (x) { return x.role === 'ADMIN' && x.active; });
-        if (admins.length <= 1) throw new Error('Minimal harus ada 1 admin aktif.');
+      if (found.role === 'ADMIN' && found.active && found.pin && (role !== 'ADMIN' || !active || !finalPin)) {
+        var admins = readEmployees_().filter(function (x) { return x.role === 'ADMIN' && x.active && x.pin; });
+        if (admins.length <= 1) throw new Error('Minimal harus ada 1 admin aktif yang bisa login.');
       }
-      sh.getRange(found.row, 2, 1, 4).setValues([[role, pin || found.pin, active, e.notes != null ? e.notes : found.notes]]);
+      sh.getRange(found.row, 3).setNumberFormat('@');
+      sh.getRange(found.row, 2, 1, 5).setValues([[role, finalPin, active, e.notes != null ? e.notes : found.notes, position === 'STAFF' ? '' : position]]);
     } else {
       var r = sh.getLastRow() + 1;
       sh.getRange(r, 3).setNumberFormat('@');
-      sh.getRange(r, 1, 1, 5).setValues([[name, role, pin || randomPin_(), active, e.notes || '']]);
+      sh.getRange(r, 1, 1, 6).setValues([[name, role, finalPin, active, e.notes || '', position === 'STAFF' ? '' : position]]);
     }
     return { employees: employeesForAdmin_() };
   });
 }
 
 function employeesForAdmin_() {
-  return readEmployees_().map(function (e) { return { name: e.name, role: e.role, pin: e.pin, active: e.active, notes: e.notes }; });
+  return readEmployees_().map(function (e) { return { name: e.name, role: e.role, pin: e.pin, active: e.active, notes: e.notes, position: e.position, login: !!e.pin }; });
+}
+
+function normPosition_(v) {
+  var p = up_(v);
+  if (/^(BOSS|BOS|OWNER|CEO|DIREKTUR|DIRECTOR)$/.test(p)) return 'BOSS';
+  if (/^(MANAGER|MANAJER)$/.test(p)) return 'MANAGER';
+  return 'STAFF';
+}
+
+/** Tambah kolom POSITION ke sheet EMPLOYEES lama + dropdown pilihan agar tidak salah ketik. */
+function ensureEmployeeHeader_() {
+  var sh = ensureSheet_(SHEETS.EMPLOYEES, HEADERS.EMPLOYEES, { textCols: [3] });
+  var h = sh.getRange(1, 6);
+  if (String(h.getValue()).trim() === '') h.setValue('POSITION').setFontWeight('bold').setBackground('#1f2937').setFontColor('#ffffff');
+  try {
+    var n = Math.max(1, sh.getMaxRows() - 1);
+    sh.getRange(2, 2, n, 1).setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(['ADMIN', 'EMPLOYEE'], true).setAllowInvalid(false).build());
+    sh.getRange(2, 6, n, 1).setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(['STAFF', 'MANAGER', 'BOSS'], true).setAllowInvalid(true).build());
+  } catch (err) { }
+  return sh;
+}
+
+/** Terapkan TEAM_STRUCTURE sekali saja (tidak menimpa perubahan manual sesudahnya). */
+function applyTeamStructure_() {
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('TEAM_STRUCTURE_V1')) return 'sudah diterapkan sebelumnya (tidak diubah)';
+  var sh = ensureEmployeeHeader_();
+  var out = [];
+  TEAM_STRUCTURE.forEach(function (t) {
+    var e = findEmployee_(t.name);
+    var pin = t.login ? ((e && e.pin) || randomPin_()) : '';
+    var row = e ? e.row : sh.getLastRow() + 1;
+    sh.getRange(row, 3).setNumberFormat('@');
+    sh.getRange(row, 1, 1, 6).setValues([[t.name, t.role, pin, true, t.notes, t.position]]);
+    out.push(t.name + ' = ' + t.position + (t.login ? ' (PIN ' + pin + ')' : ' (tanpa akun)'));
+  });
+  var owner = findEmployee_('OWNER');
+  var target = findEmployee_(TEAM_MERGE_OWNER_INTO);
+  if (owner && owner.active && target && target.role === 'ADMIN' && target.pin) {
+    sh.getRange(owner.row, 4, 1, 2).setValues([[false, 'Dinonaktifkan: digabung ke akun ' + TEAM_MERGE_OWNER_INTO]]);
+    out.push('OWNER dinonaktifkan → login sebagai ' + TEAM_MERGE_OWNER_INTO);
+  }
+  SpreadsheetApp.flush();
+  props.setProperty('TEAM_STRUCTURE_V1', String(Date.now()));
+  return out.join(' ; ');
 }
 
 /* =========================== CHANNEL REPORT =========================== */
@@ -427,8 +557,18 @@ var COLS = {
   notes: ['NOTES', 'CATATAN'],
   employees: ['RELEVANT EMPLOYEES', 'EMPLOYEES', 'EMPLOYEE', 'KARYAWAN'],
   salary: ['SALARY', 'GAJI'],
-  salaryDate: ['DATE OF SALARY', 'TANGGAL GAJI', 'PAYDAY']
+  salaryDate: ['DATE OF SALARY', 'TANGGAL GAJI', 'PAYDAY'],
+  minDuration: ['MIN DURATION (MIN)', 'MIN DURATION', 'DURASI MIN', 'DURASI MINIMAL (MENIT)']
 };
+
+/** Tambah kolom MIN DURATION (MIN) di ujung kanan CHANNEL REPORT kalau belum ada. */
+function ensureChannelExtraCols_() {
+  var data = readChannels_();
+  if (data.map.minDuration != null) return;
+  var sh = data.sheet;
+  var col = sh.getLastColumn() + 1;
+  sh.getRange(1, col).setValue(COLS.minDuration[0]).setFontWeight('bold');
+}
 
 function headerMap_(values) {
   var r1 = values[0] || [], r2 = values[1] || [];
@@ -504,7 +644,8 @@ function readChannels_() {
       notesRow: notesRow[i + 1] || i + 1,
       employees: splitNames_(get('employees')),
       salary: String(getD('salary') || '').trim(),
-      salaryDate: String(getD('salaryDate') || '').trim()
+      salaryDate: String(getD('salaryDate') || '').trim(),
+      minDuration: Number(get('minDuration')) || 0
     });
   }
   return { list: list, map: map, sheet: sh };
@@ -542,9 +683,13 @@ function updateChannel_(c) {
     if (f.employees !== undefined) set('employees', (Array.isArray(f.employees) ? f.employees : splitNames_(f.employees)).join(', '));
     if (f.salary !== undefined) set('salary', f.salary);
     if (f.salaryDate !== undefined) set('salaryDate', f.salaryDate);
+    if (f.minDuration !== undefined) set('minDuration', Number(f.minDuration) || '');
+    var newName = f.name !== undefined ? String(f.name).replace(/\s+/g, ' ').trim() : ch.key;
+    var moved = 0;
+    if (newName && newName !== ch.key) moved = renameReportsChannel_(ch.key, newName);
     SpreadsheetApp.flush();
     syncEmployees_();
-    return { ok: true };
+    return { ok: true, reportsMoved: moved };
   });
 }
 
@@ -571,6 +716,7 @@ function addChannel_(c) {
     put('employees', (Array.isArray(c.employees) ? c.employees : splitNames_(c.employees)).join(', '));
     put('salary', c.salary || '');
     put('salaryDate', c.salaryDate || '');
+    put('minDuration', Number(c.minDuration) || '');
     if (map.pct != null && map.current != null && map.target != null) {
       row[map.pct] = '=IFERROR(' + colLetter_(map.current + 1) + r + '/' + colLetter_(map.target + 1) + r + ',0)';
     }
@@ -636,7 +782,7 @@ function cleanReport_(r, user, channels) {
   if (date > today) throw new Error('Tidak bisa melapor untuk tanggal yang akan datang.');
   var admin = user.role === 'ADMIN';
   var back = Number(config_().BACKDATE_DAYS) || 3;
-  if (!admin && date < KPI.addDays(today, -back)) throw new Error('Laporan hanya bisa diisi/diubah maksimal ' + back + ' hari ke belakang. Hubungi admin.');
+  if (!admin && date < KPI.addDays(today, -back)) throw new Error('Laporan hanya bisa diisi/diubah maksimal ' + back + ' hari ke belakang. Hubungi manager.');
   var employee = admin && r.employee ? up_(r.employee) : user.name;
   var ch = channels.filter(function (c) { return c.key === r.channel; })[0];
   if (!ch) throw new Error('Channel tidak ditemukan.');
@@ -665,7 +811,7 @@ function canEditReport_(existing, user) {
   if (user.role === 'ADMIN') return true;
   if (existing.employee !== user.name) throw new Error('Kamu hanya bisa mengubah laporanmu sendiri.');
   var back = Number(config_().BACKDATE_DAYS) || 3;
-  if (existing.date < KPI.addDays(today_(), -back)) throw new Error('Laporan lebih dari ' + back + ' hari tidak bisa diubah. Hubungi admin.');
+  if (existing.date < KPI.addDays(today_(), -back)) throw new Error('Laporan lebih dari ' + back + ' hari tidak bisa diubah. Hubungi manager.');
   return true;
 }
 
@@ -729,13 +875,16 @@ function getData_(user) {
     backendVersion: BACKEND_VERSION,
     config: publicConfig_(cfg),
     channels: channelsForUser_(channels, user),
-    employees: emps.filter(function (e) { return seeAll || e.name === user.name || e.role === 'ADMIN'; })
-      .map(function (e) { return { name: e.name, role: e.role, active: e.active }; }),
+    employees: emps.filter(function (e) { return seeAll || e.name === user.name || e.role === 'ADMIN' || e.position !== 'STAFF'; })
+      .map(function (e) { return { name: e.name, role: e.role, active: e.active, position: e.position, login: !!e.pin }; }),
     reports: reports,
     ytLastSync: Number(PropertiesService.getScriptProperties().getProperty('YT_LAST_SYNC') || 0)
   };
   if (admin) {
-    out.admin = { employees: employeesForAdmin_(), spreadsheetUrl: ss_().getUrl(), configRaw: cfg };
+    out.admin = {
+      employees: employeesForAdmin_(), spreadsheetUrl: ss_().getUrl(), configRaw: cfg,
+      payroll: payrollItems_(channels), reminderTo: reminderRecipients_()
+    };
   }
   return out;
 }
@@ -1001,4 +1150,238 @@ function getHistory_(channelId, days) {
     (vids[r[1]] = vids[r[1]] || []).push([r[0], Number(r[3]) || 0]);
   });
   return { channelId: channelId, channel: ch, videos: vids };
+}
+
+
+/* =========================== RENAME CHANNEL =========================== */
+
+/** Kalau nama channel diganti, laporan lama ikut pindah ke nama baru supaya KPI tidak hilang. */
+function renameReportsChannel_(oldKey, newKey) {
+  var sh = sheet_(SHEETS.REPORTS);
+  if (!sh || sh.getLastRow() < 2) return 0;
+  var rng = sh.getRange(2, 5, sh.getLastRow() - 1, 1);
+  var vals = rng.getValues(), n = 0;
+  vals.forEach(function (r) { if (String(r[0]).replace(/\s+/g, ' ').trim() === oldKey) { r[0] = newKey; n++; } });
+  if (n) rng.setValues(vals);
+  return n;
+}
+
+/* =========================== PAYROLL & PENGINGAT =========================== */
+
+function parseMoney_(v) {
+  if (typeof v === 'number') return v;
+  var m = String(v || '').match(/\d[\d.,]*/);
+  if (!m) return 0;
+  return Number(m[0].replace(/[.,](?=\d{3}(\D|$))/g, '').replace(/[.,]\d{1,2}$/, '').replace(/\D/g, '')) || 0;
+}
+function parseDay_(v) {
+  if (typeof v === 'number') return Math.min(31, Math.max(1, Math.round(v)));
+  var m = String(v || '').match(/(\d{1,2})/);
+  return m ? Math.min(31, Math.max(1, +m[1])) : 0;
+}
+/** Tanggal jatuh tempo untuk hari ke-`day` di bulan dari `date` (dipotong ke akhir bulan). */
+function dueDateIn_(day, date) {
+  var y = +date.slice(0, 4), mo = +date.slice(5, 7);
+  var last = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  return date.slice(0, 8) + ('0' + Math.min(day, last)).slice(-2);
+}
+
+function readPayrollExtra_() {
+  var sh = sheet_(SHEETS.PAYROLL);
+  if (!sh || sh.getLastRow() < 2) return [];
+  return sh.getRange(2, 1, sh.getLastRow() - 1, HEADERS.PAYROLL.length).getValues().map(function (r, i) {
+    return {
+      row: i + 2, name: String(r[0]).trim(), category: up_(r[1]) === 'BIAYA' ? 'BIAYA' : 'GAJI',
+      amount: parseMoney_(r[2]), day: parseDay_(r[3]),
+      active: String(r[4]).trim() === '' ? true : bool_(r[4]), notes: String(r[5] || '')
+    };
+  }).filter(function (x) { return x.name; });
+}
+
+/** Semua pengeluaran rutin: gaji staff (dari CHANNEL REPORT) + sheet PAYROLL. HANYA untuk admin. */
+function payrollItems_(channels) {
+  channels = channels || readChannels_().list;
+  var extra = readPayrollExtra_();
+  var inPayroll = {};
+  extra.forEach(function (x) { if (x.category === 'GAJI') inPayroll[up_(x.name)] = true; });
+  var active = {};
+  readEmployees_().forEach(function (e) { active[e.name] = e.active; });
+  var people = {}, order = [];
+  channels.forEach(function (c) {
+    c.employees.forEach(function (n) {
+      if (inPayroll[n] || active[n] === false) return;
+      if (!people[n]) { people[n] = { salaries: [], dates: [] }; order.push(n); }
+      if (c.salary && people[n].salaries.indexOf(c.salary) < 0) people[n].salaries.push(c.salary);
+      if (c.salaryDate && people[n].dates.indexOf(c.salaryDate) < 0) people[n].dates.push(c.salaryDate);
+    });
+  });
+  var items = [];
+  order.forEach(function (n) {
+    var p = people[n];
+    if (!p.salaries.length) return;
+    items.push({ source: 'CHANNEL', name: n, category: 'GAJI', amount: parseMoney_(p.salaries[0]), label: p.salaries.join(' / '),
+      day: parseDay_(p.dates[0]), schedule: p.dates.join(' / '), active: true, notes: '' });
+  });
+  extra.forEach(function (x) {
+    items.push({ source: 'PAYROLL', row: x.row, name: x.name, category: x.category, amount: x.amount, label: '',
+      day: x.day, schedule: x.day ? 'Tanggal ' + x.day + ' setiap bulan' : '', active: x.active, notes: x.notes });
+  });
+  return items;
+}
+
+function savePayrollItem_(it) {
+  var name = String(it.name || '').trim();
+  if (!name) throw new Error('Nama / keterangan wajib diisi.');
+  var amount = parseMoney_(it.amount);
+  var day = parseDay_(it.day);
+  if (!amount) throw new Error('Nominal wajib diisi.');
+  if (!day) throw new Error('Tanggal (1–31) wajib diisi.');
+  return withLock_(function () {
+    var sh = ensureSheet_(SHEETS.PAYROLL, HEADERS.PAYROLL);
+    var row = [up_(it.category) === 'BIAYA' ? name : up_(name), up_(it.category) === 'BIAYA' ? 'BIAYA' : 'GAJI', amount, day, it.active !== false, String(it.notes || '')];
+    var r = Number(it.row);
+    if (r >= 2 && r <= sh.getLastRow()) sh.getRange(r, 1, 1, row.length).setValues([row]);
+    else sh.getRange(sh.getLastRow() + 1, 1, 1, row.length).setValues([row]);
+    sh.getRange(2, 3, Math.max(1, sh.getLastRow() - 1), 1).setNumberFormat('"Rp"#,##0');
+    return { payroll: payrollItems_() };
+  });
+}
+
+function deletePayrollItem_(row, name) {
+  return withLock_(function () {
+    var it = readPayrollExtra_().filter(function (x) { return x.row === row && x.name === name; })[0];
+    if (!it) throw new Error('Data sudah berubah. Muat ulang lalu coba lagi.');
+    sheet_(SHEETS.PAYROLL).deleteRow(row);
+    return { payroll: payrollItems_() };
+  });
+}
+
+function reminderRecipients_() {
+  var list = String(config_().REMINDER_EMAILS || '').split(/[,;\s]+/).filter(function (x) { return /@/.test(x); });
+  if (!list.length) {
+    try { var me = Session.getEffectiveUser().getEmail(); if (me) list.push(me); } catch (e) { }
+  }
+  return list;
+}
+
+/** Item yang jatuh tempo tepat pada `date` (yyyy-MM-dd). */
+function payrollBatchOn_(date) {
+  var items = payrollItems_().filter(function (x) { return x.active && x.day && x.amount && dueDateIn_(x.day, date) === date; });
+  return { date: date, items: items, total: items.reduce(function (s, x) { return s + x.amount; }, 0) };
+}
+
+/** Batch berikutnya mulai hari ini (maks. 62 hari ke depan). */
+function nextPayrollBatch_() {
+  var today = today_();
+  for (var i = 0; i <= 62; i++) {
+    var b = payrollBatchOn_(KPI.addDays(today, i));
+    if (b.items.length) { b.daysLeft = i; return b; }
+  }
+  return null;
+}
+
+function rp_(n) { return 'Rp ' + String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '.'); }
+
+function sendPayrollReminder_(isTest, batch) {
+  batch = batch || nextPayrollBatch_();
+  if (!batch) throw new Error('Belum ada data gaji/biaya dengan tanggal jatuh tempo.');
+  var to = reminderRecipients_();
+  if (!to.length) throw new Error('Belum ada email penerima. Isi REMINDER_EMAILS di Admin → Pengaturan.');
+  var company = config_().COMPANY_NAME || 'Tim';
+  var left = batch.daysLeft != null ? batch.daysLeft : Math.round((Date.parse(batch.date) - Date.parse(today_())) / 864e5);
+  var d = new Date(batch.date + 'T00:00:00Z');
+  var hari = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'][d.getUTCDay()];
+  var bulan = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'][d.getUTCMonth()];
+  var tgl = hari + ', ' + d.getUTCDate() + ' ' + bulan + ' ' + d.getUTCFullYear();
+  var subject = (isTest ? '[TES] ' : '') + '🔔 ' + company + ': gajian ' + tgl + ' (' + (left === 0 ? 'hari ini' : 'H-' + left) + ') · ' + rp_(batch.total);
+  var rows = batch.items.map(function (x) {
+    return '<tr><td style="padding:6px 10px;border-bottom:1px solid #eee">' + (x.category === 'BIAYA' ? '🏢 ' : '👤 ') + x.name + '</td>' +
+      '<td style="padding:6px 10px;border-bottom:1px solid #eee;color:#666">' + (x.category === 'BIAYA' ? 'Biaya' : 'Gaji') + '</td>' +
+      '<td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right">' + rp_(x.amount) + '</td></tr>';
+  }).join('');
+  var html = '<div style="font-family:Arial,sans-serif;max-width:560px">' +
+    '<h2 style="margin:0 0 4px">Pengingat gajian ' + company + '</h2>' +
+    '<p style="margin:0 0 14px;color:#555">Jatuh tempo <b>' + tgl + '</b> (' + (left === 0 ? 'hari ini' : left + ' hari lagi') + ').</p>' +
+    '<table style="border-collapse:collapse;width:100%;font-size:14px">' + rows +
+    '<tr><td style="padding:8px 10px"><b>Total</b></td><td></td><td style="padding:8px 10px;text-align:right"><b>' + rp_(batch.total) + '</b></td></tr></table>' +
+    '<p style="color:#888;font-size:12px;margin-top:16px">Email otomatis dari KPI Tracker. Hanya dikirim ke admin. Ubah penerima di Admin → Pengaturan.</p></div>';
+  MailApp.sendEmail({ to: to.join(','), subject: subject, htmlBody: html, name: 'KPI Tracker' });
+  return { to: to, date: batch.date, total: batch.total, items: batch.items.length };
+}
+
+/** Dipanggil cronJob tiap jam: kirim email tepat H-N (sekali per batch). */
+function checkPayrollReminder_() {
+  var cfg = config_();
+  var before = parseInt(cfg.REMINDER_DAYS_BEFORE, 10);
+  if (!(before >= 0)) before = 5;
+  var hourNow = Number(Utilities.formatDate(new Date(), tz_(), 'H'));
+  var hour = parseInt(cfg.REMINDER_HOUR, 10);
+  if (!(hour >= 0)) hour = 8;
+  if (hourNow < hour) return null;
+  var due = KPI.addDays(today_(), before);
+  var props = PropertiesService.getScriptProperties();
+  var key = 'REMINDER_SENT_' + due;
+  if (props.getProperty(key)) return null;
+  var batch = payrollBatchOn_(due);
+  if (!batch.items.length) return null;
+  batch.daysLeft = before;
+  var res = sendPayrollReminder_(false, batch);
+  props.setProperty(key, String(Date.now()));
+  return res;
+}
+
+/* =========================== UPDATE DATA 1.2.0 =========================== */
+
+function applyDataUpdateV120_() {
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('DATA_UPDATE_V120')) return 'sudah diterapkan sebelumnya (tidak diubah)';
+  var out = [];
+
+  // 1) PAYROLL: gaji manager + sewa ruangan
+  var psh = ensureSheet_(SHEETS.PAYROLL, HEADERS.PAYROLL);
+  var have = {};
+  readPayrollExtra_().forEach(function (x) { have[up_(x.name)] = true; });
+  var add = PAYROLL_SEED.filter(function (r) { return !have[up_(r[0])]; });
+  if (add.length) {
+    psh.getRange(psh.getLastRow() + 1, 1, add.length, add[0].length).setValues(add);
+    psh.getRange(2, 3, psh.getLastRow() - 1, 1).setNumberFormat('"Rp"#,##0');
+  }
+  out.push('PAYROLL +' + add.length + ' baris');
+
+  // 2) Katon: channel baru + lepas channel lama + pindahkan data gaji
+  var K = KATON_UPDATE;
+  var data = readChannels_();
+  var exists = {};
+  data.list.forEach(function (c) { exists[c.key] = true; });
+  var old = data.list.filter(function (c) { return c.employees.indexOf(K.employee) >= 0 && up_(c.indicator) !== K.indicator; });
+  var src = old.filter(function (c) { return c.salary; })[0];
+  var created = 0;
+  K.channels.forEach(function (nc) {
+    if (exists[nc.name]) return;
+    addChannel_({ name: nc.name, type: K.type, link: '', indicator: K.indicator, target: K.target, notes: nc.notes, employees: K.employee, minDuration: K.minDuration });
+    created++;
+  });
+  data = readChannels_();
+  var map = data.map, sh = data.sheet;
+  if (src && map.salary != null) {
+    data.list.filter(function (c) { return K.channels.some(function (x) { return x.name === c.key; }) && !c.salary; }).forEach(function (c) {
+      sh.getRange(src.row, map.salary + 1).copyTo(sh.getRange(c.row, map.salary + 1));
+      if (map.salaryDate != null) sh.getRange(src.row, map.salaryDate + 1).copyTo(sh.getRange(c.row, map.salaryDate + 1));
+    });
+  }
+  old.forEach(function (c) {
+    if (map.employees != null) sh.getRange(c.row, map.employees + 1).setValue('');
+    if (map.salary != null) sh.getRange(c.row, map.salary + 1).setValue('');
+    if (map.salaryDate != null) sh.getRange(c.row, map.salaryDate + 1).setValue('');
+    if (map.notes != null && (c.notesRow || c.row) === c.row) {
+      var cell = sh.getRange(c.row, map.notes + 1);
+      var cur = String(cell.getValue() || '').trim();
+      if (cur.indexOf(K.oldNote) < 0) cell.setValue(cur ? cur + ' | ' + K.oldNote : K.oldNote);
+    }
+  });
+  SpreadsheetApp.flush();
+  out.push('KATON: +' + created + ' channel playlist, ' + old.length + ' channel lama dilepas' + (src ? ', data gaji dipindahkan' : ''));
+
+  props.setProperty('DATA_UPDATE_V120', String(Date.now()));
+  return out.join(' ; ');
 }

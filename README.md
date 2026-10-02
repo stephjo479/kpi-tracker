@@ -117,6 +117,30 @@ Semuanya bisa diubah di **Admin → Pengaturan** (atau sheet `CONFIG`). Nilai aw
 | `BACKDATE_DAYS` | `3` | Batas isi/ubah laporan mundur bagi karyawan |
 | `YT_SYNC_HOURS` | `3` | Sinkron views tiap 3 jam |
 
+## Gaji & pengingat (khusus admin: Arya & Zul)
+
+- **Gaji staff** dibaca dari kolom `SALARY` + `DATE OF SALARY` di `CHANNEL REPORT`.
+- **Gaji manager & biaya tetap** ada di sheet **`PAYROLL`**:
+
+  | NAME | CATEGORY | AMOUNT | DUE DAY | ACTIVE | NOTES |
+  |---|---|---|---|---|---|
+  | ARYA | GAJI | 10.000.000 | 10 | TRUE | Gaji Manager |
+  | ZUL | GAJI | 10.000.000 | 10 | TRUE | Gaji Manager |
+  | Sewa ruang kerja | BIAYA | 5.000.000 | 10 | TRUE | Dibayar setiap bulan |
+
+  Bisa diubah di **Admin → Gaji** atau langsung di sheet.
+- **Pengingat H-5** sebelum setiap tanggal jatuh tempo (batch tgl 10 dan tgl 23):
+  - **Email** otomatis jam 08.00. Penerimanya diatur di **Admin → Pengaturan → Pengingat gajian** (isi email Arya & Zul). Kalau kosong, email dikirim ke pemilik spreadsheet.
+  - **Banner + titik merah** di menu Admin sejak H-5 sampai hari-H.
+  - **Notifikasi HP/PC** saat aplikasi dibuka (aktifkan sekali di Admin → Gaji).
+- Tes kapan saja: **Admin → Gaji → Kirim email tes**, atau menu spreadsheet **🎯 KPI Tracker → Kirim email pengingat gajian (tes)**.
+- Staff tidak pernah menerima data gaji, sheet PAYROLL, maupun pengingat.
+
+## Durasi minimal video
+
+Kolom baru **`MIN DURATION (MIN)`** di ujung kanan `CHANNEL REPORT` (misal `60` untuk channel playlist Katon).
+Video yang lebih pendek ditandai **"Di bawah 60 menit"** dan tidak dihitung di kolom *Upload YT* pada detail KPI.
+
 ## Pelacakan views YouTube
 
 - Memakai **YouTube Data API** resmi (data publik, tidak perlu YouTube Studio / login channel).
@@ -129,7 +153,16 @@ Semuanya bisa diubah di **Admin → Pengaturan** (atau sheet `CONFIG`). Nilai aw
 
 Semua tetap bisa diedit di spreadsheet. Aplikasi membaca ulang data setiap 60 detik.
 - Tambah channel / ganti target / ganti karyawan → edit `CHANNEL REPORT` seperti biasa (nama baru otomatis dibuatkan akun dalam ≤1 jam, atau jalankan menu *Setup*).
-- Ganti PIN / nonaktifkan karyawan / jadikan admin → sheet `EMPLOYEES`.
+- Ganti PIN / nonaktifkan karyawan / jadikan admin / jabatan → sheet `EMPLOYEES`:
+
+  | Kolom | Isi |
+  |---|---|
+  | `ROLE` | `ADMIN` = akses penuh **termasuk gaji** · `EMPLOYEE` = tanpa gaji |
+  | `PIN` | 4–8 angka. **Kosong = tidak bisa login** (misal bos yang hanya tercantum di struktur tim) |
+  | `ACTIVE` | `FALSE` = tidak bisa login & tidak tampil di tim/KPI |
+  | `POSITION` | `BOSS` / `MANAGER` / `STAFF` (kosong = STAFF). **BOSS & MANAGER tidak masuk peringkat KPI** |
+
+  Struktur saat ini: **Kim Euijong** = Bos (tanpa akun) · **Arya** & **Zul** = Manager + Admin · lainnya Staff.
 - Koreksi laporan → sheet `DAILY REPORT`.
 - Jangan ganti nama kolom header di baris 1–2 `CHANNEL REPORT`; urutan kolom boleh berubah.
 - Laporan terhubung ke **nama channel** (kolom CHANNEL NAME). Kalau nama channel diganti di sheet, laporan lama dengan nama lama tidak ikut pindah.

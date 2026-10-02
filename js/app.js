@@ -68,6 +68,26 @@
   };
   function divBadge(d) { d = DIV[d] ? d : 'OTHER'; return '<span class="badge div-' + d + '">' + esc(DIV[d].short) + '</span>'; }
 
+  /* Jabatan: BOSS / MANAGER / STAFF (kolom POSITION di sheet EMPLOYEES) */
+  var POS = { BOSS: 'Bos', MANAGER: 'Manager', STAFF: 'Staff' };
+  function posOf(x) { var p = String((x && x.position) || '').toUpperCase(); return POS[p] ? p : 'STAFF'; }
+  function posBadge(x) {
+    var p = posOf(x);
+    if (p === 'STAFF') return '<span class="badge st-none">Staff</span>';
+    return '<span class="badge pos-' + p + '">' + icon(p === 'BOSS' ? 'crown' : 'admin') + POS[p] + '</span>';
+  }
+  function roleLabel(u) {
+    if (!u) return '';
+    var p = posOf(u);
+    if (p !== 'STAFF') return POS[p] + (u.role === 'ADMIN' ? ' · Admin' : '');
+    return u.role === 'ADMIN' ? 'Admin' : 'Staff';
+  }
+  function leaders(pos) { return D().employees.filter(function (e) { return e.active && posOf(e) === pos; }); }
+  function managerNames() {
+    var m = S.data ? leaders('MANAGER').map(function (e) { return e.name; }) : ((S.publicInfo && S.publicInfo.managers) || []);
+    return m.map(cap).join(' / ');
+  }
+
   var ICONS = {
     home: '<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
     report: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 3h6v3H9zM9 11h6M9 15h4"/>',
@@ -100,7 +120,10 @@
     logo: '<path d="M5 19v-6M11 19V5M17 19v-9"/><path d="M3 21h18"/>',
     sheet: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/>',
     subs: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/>',
-    lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>'
+    lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+    crown: '<path d="M3 18h18M4 18 3 7l5 4 4-7 4 7 5-4-1 11"/>',
+    bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'
   };
   function icon(n, cls) { return '<svg class="' + (cls || '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICONS[n] || '') + '</svg>'; }
 
@@ -173,8 +196,10 @@
     ((S.yt && S.yt.videos) || []).forEach(function (v) { (S.vidByCh[v.ch] = S.vidByCh[v.ch] || []).push(v); });
   }
   function videosOf(c) { var y = ytOf(c); return y && y.id ? (S.vidByCh[y.id] || []) : []; }
+  function minSec(c) { return (Number(c && c.minDuration) || 0) * 60; }
+  function videoValid(c, v) { return !minSec(c) || (v.d || 0) >= minSec(c); }
   function uploadsIn(c, from, to) {
-    return videosOf(c).filter(function (v) { var d = dateInTz(new Date(v.p)); return d >= from && d <= to; }).length;
+    return videosOf(c).filter(function (v) { var d = dateInTz(new Date(v.p)); return d >= from && d <= to && videoValid(c, v); }).length;
   }
   function kpiRange(from, to) {
     var d = D();
@@ -223,6 +248,7 @@
     return API.call('getData').then(function (d) {
       S.data = d; S.user = d.user; S.loading = false;
       Store.setJSON('user', d.user); Store.setJSON('cache_data', d);
+      try { maybeNotifyPayroll(); } catch (e) { }
       if (!silent || canRerender()) render();
     }).catch(function (e) { S.loading = false; if (!silent || e.code === 'AUTH') handleErr(e); });
   }
@@ -335,6 +361,7 @@
     { id: 'report', label: 'Laporan', icon: 'report' },
     { id: 'kpi', label: 'KPI', icon: 'kpi' },
     { id: 'channels', label: 'Channel', icon: 'yt' },
+    { id: 'team', label: 'Struktur Tim', icon: 'users' },
     { id: 'admin', label: 'Admin', icon: 'admin', admin: true },
     { id: 'settings', label: 'Pengaturan', icon: 'settings' }
   ];
@@ -355,6 +382,7 @@
     else if (r.name === 'channels') page = channelsView();
     else if (r.name === 'channel') page = channelDetailView(r.arg);
     else if (r.name === 'admin') page = adminView();
+    else if (r.name === 'team') page = teamView();
     else if (r.name === 'settings') page = settingsView();
     else page = homeView();
     var active = r.name === 'channel' ? 'channels' : r.name;
@@ -372,18 +400,19 @@
     var company = cfg().COMPANY_NAME || (S.publicInfo && S.publicInfo.company) || 'KPI Tracker';
     var navItems = NAV.filter(function (n) { return !n.admin || isAdmin(); });
     var side = '<aside class="sidebar"><div class="brand"><div class="brand-logo">' + icon('logo') + '</div><div class="col"><div class="brand-name">' + esc(company) + '</div><div class="brand-sub">KPI & Channel Tracker</div></div></div>' +
-      navItems.map(function (n) { return '<a class="nav-item ' + (active === n.id ? 'active' : '') + '" href="#/' + n.id + '">' + icon(n.icon) + n.label + '</a>'; }).join('') +
+      navItems.map(function (n) { return '<a class="nav-item ' + (active === n.id ? 'active' : '') + '" href="#/' + n.id + '">' + icon(n.icon) + n.label + (n.id === 'admin' && activeReminder() ? '<span class="nav-dot" title="Pengingat gajian"></span>' : '') + '</a>'; }).join('') +
       '<div class="nav-spacer"></div>' +
       (isStandalone() ? '' : '<div class="mb">' + installButton('block sm', 'Pasang di PC') + '</div>') +
       (API.isDemo() ? '<div class="notice warn xs mb">Mode demo — data fiktif</div>' : '') +
-      '<div class="user-card">' + personAvatar(u.name) + '<div class="col grow"><div class="bold ellipsis">' + esc(cap(u.name)) + '</div><div class="xs muted">' + (u.role === 'ADMIN' ? 'Admin / Owner' : 'Karyawan') + '</div></div>' +
+      '<div class="user-card">' + personAvatar(u.name) + '<div class="col grow"><div class="bold ellipsis">' + esc(cap(u.name)) + '</div><div class="xs muted">' + esc(roleLabel(u)) + '</div></div>' +
       '<button class="btn ghost icon sm" data-act="cycle-theme" title="Ganti tema">' + icon(effectiveDark() ? 'moon' : 'sun') + '</button></div></aside>';
     var bottomIds = isAdmin() ? ['home', 'report', 'kpi', 'channels', 'admin'] : ['home', 'report', 'kpi', 'channels', 'settings'];
     var bottom = '<nav class="bottom-nav">' + bottomIds.map(function (id) {
       var n = NAV.filter(function (x) { return x.id === id; })[0];
-      return '<a class="nav-item ' + (active === id ? 'active' : '') + '" href="#/' + id + '">' + icon(n.icon) + (id === 'settings' ? 'Akun' : n.label) + '</a>';
+      return '<a class="nav-item ' + (active === id ? 'active' : '') + '" href="#/' + id + '">' + icon(n.icon) + (id === 'settings' ? 'Akun' : n.label) + (id === 'admin' && activeReminder() ? '<span class="nav-dot"></span>' : '') + '</a>';
     }).join('') + '</nav>';
     var top = '<header class="topbar"><div class="brand-logo" style="width:32px;height:32px;border-radius:10px">' + icon('logo') + '</div><div class="grow bold ellipsis">' + esc(company) + '</div>' +
+      '<a class="btn ghost icon sm' + (active === 'team' ? ' active' : '') + '" href="#/team" aria-label="Struktur tim" title="Struktur tim">' + icon('users') + '</a>' +
       '<button class="btn ghost icon sm" data-act="cycle-theme" aria-label="Ganti tema">' + icon(effectiveDark() ? 'moon' : 'sun') + '</button>' +
       '<a href="#/settings" aria-label="Akun">' + personAvatar(u.name, 'sm') + '</a></header>';
     return '<div class="shell">' + side + '<div class="main">' + top + '<main class="content"><div id="update-slot">' + updateBanner() + '</div>' + page + '</main></div>' + bottom + '</div>';
@@ -420,11 +449,13 @@
           : S._infoFailed
             ? '<input class="input" name="name" placeholder="Nama sesuai sheet" autocomplete="username" required>'
             : '<select class="input" name="name" required disabled><option value="">Memuat daftar nama…</option></select>') + '</div>' +
-        '<div class="field"><label>PIN</label><input class="input pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="current-password" required placeholder="••••"></div>' +
+        '<div class="field"><label>PIN</label><div class="pin-wrap"><input class="input pin" id="pin-input" name="pin" type="password" inputmode="numeric" maxlength="12" autocomplete="current-password" required placeholder="••••">' +
+        '<button type="button" class="pin-eye" data-act="toggle-pin" aria-label="Tampilkan PIN" title="Tampilkan / sembunyikan PIN">' + icon('eye') + '</button></div></div>' +
+        '<div id="login-error" class="notice warn small mb hidden" role="alert"></div>' +
         '<button class="btn block" id="login-btn">Masuk</button></form>' +
         (demo ? '<div class="notice warn mt small">Mode demo (data fiktif). Coba <b>OWNER / 1234</b> (admin) atau <b>RINA / 1111</b> (karyawan).</div>' +
           '<button class="btn ghost block mt-sm" data-act="demo-off">Keluar dari mode demo</button>' :
-          '<p class="xs muted center mt">PIN diberikan oleh admin. Lupa PIN? Hubungi admin.</p>');
+          '<p class="xs muted center mt">PIN diberikan oleh manager. Lupa PIN? Hubungi ' + (managerNames() ? 'Manager: <b>' + esc(managerNames()) + '</b>' : 'manager') + '.</p>');
     }
     onMount(function () {
       if ((hasServer || demo) && !S._infoLoading) {
@@ -541,7 +572,7 @@
       '<div class="grid grid-main mt"><div class="card"><div class="card-head"><h2>Channel saya hari ini</h2><a class="small" href="#/channels">Lihat semua</a></div><div class="list">' + chList + '</div></div>' +
       '<div class="card"><div class="card-head"><h2>Video naik (24 jam)</h2></div><div class="list">' + (tv.length ? tv.map(function (x) { return videoRow(x, true); }).join('') : emptyYT()) + '</div></div></div>' +
       '<div class="card mt"><div class="card-head"><h2>Laporan terakhir</h2><a class="small" href="#/report">Buka laporan</a></div>' + reportList(myReports, false) + '</div>' +
-      installHint();
+      teamStrip() + installHint();
   }
 
   function emptyYT() {
@@ -552,7 +583,7 @@
     var t = today(), kcfg = KPI.normalizeConfig(cfg());
     var d = D();
     var todayK = kpiRange(t, t), monthK = kpiPeriod('month');
-    var staff = d.employees.filter(function (e) { return e.active && e.role !== 'ADMIN'; });
+    var staff = d.employees.filter(function (e) { return e.active && e.role !== 'ADMIN' && !KPI.isLeader(e); });
     var assigned = staff.filter(function (e) { return d.channels.some(function (c) { return c.employees.indexOf(e.name) >= 0; }); });
     var reported = {};
     d.reports.forEach(function (r) { if (r.date === t) reported[r.employee] = 1; });
@@ -596,22 +627,85 @@
     }).join('') || '<div class="empty">Belum ada data KPI.</div>';
 
     // jadwal gaji (admin)
-    var pay = payrollRows().filter(function (p) { return p.next; }).sort(function (a, b) { return a.next < b.next ? -1 : 1; });
-    var payGroups = {};
-    pay.forEach(function (p) { (payGroups[p.next] = payGroups[p.next] || []).push(p); });
-    var payHtml = Object.keys(payGroups).slice(0, 3).map(function (dte) {
-      var g = payGroups[dte], sum = g.reduce(function (s, p) { return s + p.amount; }, 0), dd = daysBetween(t, dte);
-      return '<div class="list-item"><div class="stat-icon">' + icon('calendar') + '</div><div class="col grow"><div class="bold">' + esc(fmtDate(dte, { weekday: 'short', day: 'numeric', month: 'long' })) + '</div><div class="xs muted">' + g.length + ' orang · ' + (dd === 0 ? 'hari ini' : dd + ' hari lagi') + '</div></div><div class="bold num">Rp ' + fmtN(sum) + '</div></div>';
+    var rd = reminderDays();
+    var payHtml = payrollBatches(3).map(function (b) {
+      var soon = b.daysLeft <= rd;
+      var nG = b.items.filter(function (x) { return x.category !== 'BIAYA'; }).length, nB = b.items.length - nG;
+      return '<div class="list-item"><div class="stat-icon"' + (soon ? ' style="background:var(--warning-soft);color:var(--warning-text)"' : '') + '>' + icon(soon ? 'bell' : 'calendar') + '</div><div class="col grow"><div class="bold">' + esc(fmtDate(b.date, { weekday: 'short', day: 'numeric', month: 'long' })) + '</div>' +
+        '<div class="xs muted">' + nG + ' gaji' + (nB ? ' + ' + nB + ' biaya' : '') + ' · ' + (b.daysLeft === 0 ? 'hari ini' : b.daysLeft + ' hari lagi') + '</div></div><div class="bold num">Rp ' + fmtN(b.total) + '</div></div>';
     }).join('') || '<div class="empty">Belum ada data gaji.</div>';
 
     var tv = topVideos(d.channels, 6);
-    return hero + tiles +
+    return reminderBanner() + hero + tiles +
       '<div class="grid grid-main mt"><div class="card"><div class="card-head"><h2>Belum lapor hari ini</h2><span class="sub">' + notYet.length + ' orang</span></div>' + notYetHtml +
       '<div class="divider"></div><div class="card-head" style="margin-bottom:4px"><h2>KPI per divisi</h2><span class="sub">bulan ini</span></div><div class="list">' + divs + '</div></div>' +
       '<div class="card"><div class="card-head"><h2>Top performer</h2><a class="small" href="#/kpi">Lihat KPI</a></div><div class="list">' + top + '</div></div></div>' +
       '<div class="grid grid-main mt"><div class="card"><div class="card-head"><h2>Video naik (24 jam)</h2><a class="small" href="#/channels">Semua channel</a></div><div class="list">' + (tv.length ? tv.map(function (x) { return videoRow(x, true); }).join('') : emptyYT()) + '</div></div>' +
       '<div class="card"><div class="card-head"><h2 class="row">' + icon('lock').replace('<svg ', '<svg width="16" height="16" ') + 'Jadwal gajian</h2><a class="small" href="#/admin" data-act="admin-tab" data-v="payroll">Detail</a></div><div class="list">' + payHtml + '</div><div class="xs muted mt-sm">Hanya terlihat oleh admin.</div></div></div>' +
-      installHint();
+      teamStrip() + installHint();
+  }
+
+  /* =========================================================
+     STRUKTUR TIM
+     ========================================================= */
+  function teamStrip() {
+    var boss = leaders('BOSS'), mgr = leaders('MANAGER');
+    if (!boss.length && !mgr.length) return '';
+    return '<div class="card mt row wrap" style="gap:14px"><div class="stat-icon">' + icon('users') + '</div><div class="col grow">' +
+      '<div class="bold">Struktur tim</div><div class="small text-2">' +
+      (boss.length ? 'Bos: <b>' + esc(boss.map(function (e) { return cap(e.name); }).join(', ')) + '</b>' : '') + (boss.length && mgr.length ? ' · ' : '') +
+      (mgr.length ? 'Manager: <b>' + esc(mgr.map(function (e) { return cap(e.name); }).join(', ')) + '</b>' : '') + '</div></div>' +
+      '<a class="btn ghost sm" href="#/team">Lihat struktur tim ' + icon('chev') + '</a></div>';
+  }
+
+  function teamView() {
+    var d = D(), company = cfg().COMPANY_NAME || 'Tim';
+    var boss = leaders('BOSS'), mgr = leaders('MANAGER');
+    var leaderSet = {};
+    boss.concat(mgr).forEach(function (e) { leaderSet[e.name] = posOf(e); });
+    var me = S.user && S.user.name;
+    var MGR_DESC = 'Mengelola target, channel, PIN, koreksi laporan & penggajian.';
+    function person(e, big) {
+      var p = posOf(e);
+      return '<div class="card row" style="gap:14px;align-items:center">' +
+        '<div class="avatar ' + (big ? 'lg ' : '') + 'pos-' + p + '">' + (p === 'BOSS' ? icon('crown').replace('<svg ', '<svg width="24" height="24" ') : esc(initials(e.name))) + '</div>' +
+        '<div class="col grow"><div class="row wrap" style="gap:8px"><span class="bold" style="font-size:16px">' + esc(cap(e.name)) + '</span>' + posBadge(e) + (e.name === me ? '<span class="xs muted">(kamu)</span>' : '') + '</div>' +
+        '<div class="xs muted">' + (p === 'BOSS' ? 'Pimpinan tertinggi ' + esc(company) + '.' : MGR_DESC) + '</div></div></div>';
+    }
+    var top = (boss.length ? '<div class="xs muted bold mb" style="text-transform:uppercase;letter-spacing:.05em">Bos</div><div class="grid grid-2 mb">' + boss.map(function (e) { return person(e, true); }).join('') + '</div>' : '') +
+      (mgr.length ? '<div class="xs muted bold mb" style="text-transform:uppercase;letter-spacing:.05em">Manager</div><div class="grid grid-2">' + mgr.map(function (e) { return person(e, true); }).join('') + '</div>' : '');
+    var contact = mgr.length ? '<div class="notice mt">' + icon('alert').replace('<svg ', '<svg width="14" height="14" style="vertical-align:-2px" ') +
+      ' Lupa PIN, ganti target, channel baru, atau koreksi laporan lebih dari ' + esc(cfg().BACKDATE_DAYS || 3) + ' hari → hubungi Manager: <b>' + esc(mgr.map(function (e) { return cap(e.name); }).join(' atau ')) + '</b>.</div>' : '';
+
+    var assigned = {};
+    var divCards = ['DEV', 'STAFF', 'CLIENT'].map(function (k) {
+      var chs = d.channels.filter(function (c) { return c.division === k; });
+      var members = {}, order = [];
+      chs.forEach(function (c) {
+        c.employees.forEach(function (n) {
+          assigned[n] = true;
+          if (!members[n]) { members[n] = []; order.push(n); }
+          members[n].push(c);
+        });
+      });
+      order.sort(function (a, b) { return (leaderSet[a] ? 1 : 0) - (leaderSet[b] ? 1 : 0) || a.localeCompare(b); });
+      var rows = order.map(function (n) {
+        var list = members[n];
+        return '<div class="list-item" style="align-items:flex-start">' + personAvatar(n, 'sm') + '<div class="col grow">' +
+          '<div class="row wrap" style="gap:6px"><span class="bold">' + esc(cap(n)) + '</span>' + (leaderSet[n] ? posBadge({ position: leaderSet[n] }) : '') + (n === me ? '<span class="xs muted">(kamu)</span>' : '') + '</div>' +
+          '<div class="xs text-2">' + list.length + ' channel: ' + list.map(function (c) { return '<a href="#/channel/' + encodeURIComponent(c.key) + '">' + esc(chTitle(c)) + '</a>'; }).join(', ') + '</div></div></div>';
+      }).join('') || '<div class="empty">Belum ada anggota.</div>';
+      var staffCount = order.filter(function (n) { return !leaderSet[n]; }).length;
+      return '<div class="card"><div class="card-head"><h2 class="row"><span class="dot" style="width:10px;height:10px;border-radius:50%;display:inline-block;background:var(' + DIV[k].color + ')"></span>' + esc(DIV[k].label) + '</h2>' +
+        '<span class="sub">' + staffCount + ' staff · ' + chs.length + ' channel</span></div><div class="list">' + rows + '</div></div>';
+    }).join('');
+
+    var idle = d.employees.filter(function (e) { return e.active && !leaderSet[e.name] && e.role !== 'ADMIN' && !assigned[e.name]; });
+    var idleCard = idle.length ? '<div class="card mt"><div class="card-head"><h2>Belum memegang channel</h2><span class="sub">' + idle.length + ' orang</span></div><div class="chips">' +
+      idle.map(function (e) { return '<span class="chip" style="cursor:default">' + esc(cap(e.name)) + '</span>'; }).join('') + '</div></div>' : '';
+
+    return pageHead('Struktur tim', 'Siapa mengerjakan apa di <b>' + esc(company) + '</b>, supaya tidak ada miskomunikasi.') +
+      top + contact + '<h2 class="mt mb" style="margin-top:28px">Divisi & channel</h2><div class="grid grid-3">' + divCards + '</div>' + idleCard;
   }
 
   function isStandalone() {
@@ -672,7 +766,7 @@
   /* =========================================================
      REPORTS
      ========================================================= */
-  var TASKS = ['PRODUCTION', 'UPLOAD', 'EDITING', 'THUMBNAIL', 'SCRIPT', 'RISET', 'LAINNYA'];
+  var TASKS = ['PRODUCTION', 'PLAYLIST', 'UPLOAD', 'EDITING', 'THUMBNAIL', 'SCRIPT', 'RISET', 'LAINNYA'];
   function sortReports(a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : (b.ts || '').localeCompare(a.ts || ''); }
   function canEdit(r) {
     if (isAdmin()) return true;
@@ -703,7 +797,7 @@
     if (others.length) chOptions += '<optgroup label="Channel lain">' + others.map(opt).join('') + '</optgroup>';
     var selCh = channelByKey(f.channel);
     var empOptions = admin ? '<div class="field"><label>Karyawan</label><select class="input" data-f="employee" required><option value="">Pilih karyawan…</option>' +
-      d.employees.filter(function (e) { return e.active; }).map(function (e) { return '<option' + (f.employee === e.name ? ' selected' : '') + '>' + esc(e.name) + '</option>'; }).join('') + '</select></div>' : '';
+      d.employees.filter(function (e) { return e.active && e.login !== false; }).map(function (e) { return '<option' + (f.employee === e.name ? ' selected' : '') + '>' + esc(e.name) + '</option>'; }).join('') + '</select></div>' : '';
     var noChannel = !admin && !empChannels.length;
     return '<div class="card"><div class="card-head"><h2>' + (editing ? 'Ubah laporan' : 'Isi laporan') + '</h2>' + (editing ? '<span class="badge st-warning">' + icon('edit') + 'Mode edit</span>' : '') + '</div>' +
       (noChannel ? '<div class="notice warn">Kamu belum terdaftar di channel manapun. Hubungi admin.</div>' :
@@ -711,7 +805,7 @@
         '<div class="form-row"><div class="field"><label>Tanggal</label><input class="input" type="date" data-f="date" value="' + esc(f.date) + '" max="' + today() + '"' + (admin ? '' : ' min="' + KPI.addDays(today(), -back) + '"') + ' required></div>' +
         '<div class="field"><label>Jenis tugas</label><input class="input" data-f="task" list="task-list" value="' + esc(f.task) + '" placeholder="' + esc(selCh ? selCh.indicator : 'PRODUCTION') + '"><datalist id="task-list">' + TASKS.map(function (x) { return '<option value="' + x + '">'; }).join('') + '</datalist></div></div>' +
         '<div class="field"><label>Channel</label><select class="input" data-f="channel" required>' + chOptions + '</select>' +
-        (selCh ? '<div class="hint">Target ' + esc(String(cfg().TARGET_PERIOD || 'DAILY').toLowerCase() === 'daily' ? 'harian' : String(cfg().TARGET_PERIOD).toLowerCase()) + ': <b>' + fmtN(selCh.target) + '</b> · sudah dilaporkan tanggal ini: <b>' + fmtN(channelActual(selCh.key, f.date, f.date)) + '</b>' + (selCh.notes ? ' · ' + esc(selCh.notes) : '') + '</div>' : '') + '</div>' +
+        (selCh ? '<div class="hint">Target ' + esc(String(cfg().TARGET_PERIOD || 'DAILY').toLowerCase() === 'daily' ? 'harian' : String(cfg().TARGET_PERIOD).toLowerCase()) + ': <b>' + fmtN(selCh.target) + '</b> · sudah dilaporkan tanggal ini: <b>' + fmtN(channelActual(selCh.key, f.date, f.date)) + '</b>' + (selCh.minDuration ? ' · <b>durasi minimal ' + fmtN(selCh.minDuration) + ' menit per video</b>' : '') + (selCh.notes ? ' · ' + esc(selCh.notes) : '') + '</div>' : '') + '</div>' +
         '<div class="field"><label>Jumlah selesai</label><div class="stepper"><button type="button" data-act="qty" data-v="-1" aria-label="Kurangi">−</button><input type="number" inputmode="decimal" min="0" step="1" data-f="qty" value="' + esc(f.qty) + '" required><button type="button" data-act="qty" data-v="1" aria-label="Tambah">+</button></div></div>' +
         '<div class="field"><label>Link video / hasil kerja</label><textarea class="input" data-f="links" rows="3" placeholder="Satu link per baris">' + esc(f.links) + '</textarea></div>' +
         '<div class="field"><label>Catatan <span class="muted">(opsional)</span></label><textarea class="input" data-f="notes" rows="2" placeholder="Kendala, info tambahan…">' + esc(f.notes) + '</textarea></div>' +
@@ -837,10 +931,11 @@
       '<b>Capaian output</b> = total jumlah di laporan ÷ target periode.<br>' +
       '<b>Disiplin laporan</b> = hari kerja yang ada laporannya ÷ hari kerja yang sudah berjalan.<br>' +
       '<b>Skor KPI</b> = capaian (maks. 100%) × ' + c.weightOutput + '% + disiplin × ' + c.weightDiscipline + '%.<br>' +
-      'Hari kerja: ' + c.workDays.map(function (d) { return ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'][d - 1]; }).join(', ') + '. Status: ≥90 Sangat baik · ≥75 Baik · ≥60 Cukup · &lt;60 Perlu perhatian.' +
+      'Hari kerja: ' + c.workDays.map(function (d) { return ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'][d - 1]; }).join(', ') + '. Status: ≥90 Sangat baik · ≥75 Baik · ≥60 Cukup · &lt;60 Perlu perhatian.<br>' +
+      '<b>Manager & bos tidak masuk peringkat KPI</b>, tetapi channel yang mereka pegang tetap dipantau views-nya.' +
       (isAdmin() ? '<br><span class="muted">Ubah bobot, hari kerja & arti target di Admin → Pengaturan.</span>' : '') + '</div></details>';
 
-    return pageHead('KPI karyawan', 'Dihitung real-time dari laporan harian.', '') + controls + tiles +
+    return pageHead('KPI karyawan', 'Dihitung real-time dari laporan harian. Manager & bos tidak masuk peringkat.', '') + controls + tiles +
       '<div class="card pad-0 mt">' + table + '</div>' + how;
   }
 
@@ -866,7 +961,7 @@
         '<div class="stat"><div class="label">Disiplin</div><div class="value num">' + fmtPct(e.discipline) + '</div><div class="xs muted">' + e.reportedDays + ' dari ' + e.workdays + ' hari kerja</div></div>' +
         '<div class="stat"><div class="label">Periode</div><div class="bold">' + esc(fmtDate(res.from)) + ' – ' + esc(fmtDate(res.to)) + '</div></div></div>' +
         '<div class="card-head mt"><h3>Output harian</h3><div class="legend"><span><i style="background:var(--accent)"></i>Aktual</span><span><i class="dash"></i>Target</span></div></div><div id="kpi-chart"></div>' +
-        '<h3 class="mt mb">Per channel</h3><div class="table-wrap"><table class="table"><thead><tr><th>Channel</th><th class="num">Target</th><th class="num">Aktual</th><th class="num">Capaian</th><th class="num" title="Video yang terdeteksi terbit di YouTube pada periode ini">Upload YT</th></tr></thead><tbody>' + chRows + '</tbody></table></div>',
+        '<h3 class="mt mb">Per channel</h3><div class="table-wrap"><table class="table"><thead><tr><th>Channel</th><th class="num">Target</th><th class="num">Aktual</th><th class="num">Capaian</th><th class="num" title="Video yang terdeteksi terbit di YouTube pada periode ini (yang memenuhi durasi minimal channel)">Upload YT</th></tr></thead><tbody>' + chRows + '</tbody></table></div>',
       mount: function () {
         Charts.bars($('#kpi-chart'), {
           labels: days, values: days.map(function (d) { return e.daily[d] ? e.daily[d].a : 0; }),
@@ -905,7 +1000,7 @@
       var target = channelTargetToday(c), actual = channelActual(c.key, t, t);
       return '<a class="card ch-card" href="#/channel/' + encodeURIComponent(c.key) + '" style="color:inherit;text-decoration:none">' +
         '<div class="ch-top">' + avatar(c, 'lg') + '<div class="col grow"><div class="bold ellipsis" style="font-size:15px">' + esc(chTitle(c)) + '</div>' +
-        '<div class="xs muted ellipsis">' + esc(chTitle(c) !== c.name ? c.name : (y && y.handle) || c.type) + '</div><div class="row" style="gap:6px;margin-top:2px">' + divBadge(c.division) + '<span class="xs text-2 ellipsis">' + esc(c.employees.map(cap).join(', ') || '—') + '</span></div></div></div>' +
+        '<div class="xs muted ellipsis">' + esc(chTitle(c) !== c.name ? c.name : (y && y.handle) || c.type) + '</div><div class="row" style="gap:6px;margin-top:2px">' + divBadge(c.division) + (c.minDuration ? '<span class="badge st-none">' + icon('clock') + '≥' + fmtN(c.minDuration) + 'm</span>' : '') + '<span class="xs text-2 ellipsis">' + esc(c.employees.map(cap).join(', ') || '—') + '</span></div></div></div>' +
         (ok ? '<div class="ch-stats"><div><div class="v num">' + fmtC(y.views) + '</div><div class="l">Views</div></div><div><div class="v num ' + (y.dViews > 0 ? 'up' : '') + '">' + (y.dViews == null ? '—' : signed(y.dViews, true)) + '</div><div class="l">24 jam</div></div><div><div class="v num">' + fmtC(y.subs) + '</div><div class="l">Subscriber</div></div></div>'
           : '<div class="notice small">' + icon('alert').replace('<svg ', '<svg width="14" height="14" style="vertical-align:-2px" ') + ' ' + (y && y.status === 'NOT_FOUND' ? 'Channel tidak ditemukan dari link.' : c.link ? 'Menunggu sinkron YouTube.' : esc(c.linkNote || 'Link channel belum tersedia.')) + '</div>') +
         '<div><div class="row between xs muted" style="margin-bottom:4px"><span>Output hari ini</span><span class="num">' + fmtN(actual) + ' / ' + fmtN(target) + '</span></div>' + bar(target ? actual / target : null, true) + '</div></a>';
@@ -926,7 +1021,8 @@
     var head = '<a class="btn ghost sm mb" href="#/channels">' + icon('back') + 'Semua channel</a>' +
       '<div class="card"><div class="row wrap gap-lg"><div class="row grow" style="min-width:240px">' + avatar(c, 'lg') + '<div class="col grow"><h1 class="ellipsis" style="font-size:22px">' + esc(chTitle(c)) + '</h1>' +
       '<div class="small muted ellipsis">' + esc(c.name) + (y && y.handle ? ' · ' + esc(y.handle) : '') + '</div><div class="row wrap" style="gap:6px;margin-top:4px">' + divBadge(c.division) +
-      c.employees.map(function (n) { return '<span class="badge st-none">' + icon('users') + esc(cap(n)) + '</span>'; }).join('') + '</div></div></div>' +
+      c.employees.map(function (n) { return '<span class="badge st-none">' + icon('users') + esc(cap(n)) + '</span>'; }).join('') +
+      (c.minDuration ? '<span class="badge st-warning">' + icon('clock') + 'Min. ' + fmtN(c.minDuration) + ' menit / video</span>' : '') + '</div></div></div>' +
       '<div class="row wrap">' + (c.link ? '<a class="btn ghost" href="' + esc(c.link) + '" target="_blank" rel="noopener">' + icon('ext') + 'Buka di YouTube</a>' : '') +
       (isAdmin() ? '<button class="btn ghost" data-act="edit-channel" data-key="' + esc(c.key) + '">' + icon('edit') + 'Ubah</button>' : '') + '</div></div>' +
       (c.notes ? '<div class="notice mt">' + esc(c.notes) + '</div>' : '') + '</div>';
@@ -969,7 +1065,8 @@
       var series = (vh[v.id] || []).slice(-14).map(function (x) { return x[1]; });
       return '<tr><td><a class="row" href="https://www.youtube.com/watch?v=' + esc(v.id) + '" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;min-width:260px">' +
         (v.th ? '<img class="video-thumb" src="' + esc(v.th) + '" alt="" loading="lazy" referrerpolicy="no-referrer">' : '<div class="video-thumb" style="display:grid;place-items:center;color:var(--muted)">' + icon('video').replace('<svg ', '<svg width="20" height="20" ') + '</div>') +
-        '<div class="col"><span class="video-title">' + esc(v.t) + '</span><span class="xs muted">' + relTime(v.p) + ' · ' + (v.d <= 180 ? 'Shorts' : 'Video') + ' ' + dur(v.d) + '</span></div></a></td>' +
+        '<div class="col"><span class="video-title">' + esc(v.t) + '</span><span class="xs muted">' + relTime(v.p) + ' · ' + (v.d <= 180 ? 'Shorts' : 'Video') + ' ' + dur(v.d) + '</span>' +
+        (minSec(c) && !videoValid(c, v) ? '<span class="badge st-critical" style="align-self:flex-start;margin-top:2px">' + icon('alert') + 'Di bawah ' + fmtN(c.minDuration) + ' menit</span>' : '') + '</div></a></td>' +
         '<td class="num bold">' + fmtN(v.v) + '</td><td class="num ' + (v.dv > 0 ? 'up' : 'muted') + '">' + (v.dv == null ? '—' : signed(v.dv)) + '</td>' +
         '<td class="num">' + fmtC(v.l) + '</td><td class="num">' + fmtC(v.c) + '</td><td>' + Charts.spark(series, '--accent', 90, 28) + '</td></tr>';
     }).join('');
@@ -990,24 +1087,75 @@
   /* =========================================================
      ADMIN
      ========================================================= */
-  function payrollRows() {
-    var d = D(), out = {};
-    d.channels.forEach(function (c) {
+  /* ---------- Gaji & biaya rutin (hanya admin) ---------- */
+  function payrollAll() {
+    var a = D().admin;
+    if (a && a.payroll) return a.payroll;
+    // cadangan untuk backend lama: hanya dari kolom SALARY
+    var out = {}, order = [];
+    D().channels.forEach(function (c) {
       c.employees.forEach(function (n) {
-        var o = out[n] = out[n] || { name: n, salaries: [], dates: [], channels: 0 };
-        o.channels++;
-        if (c.salary && o.salaries.indexOf(c.salary) < 0) o.salaries.push(c.salary);
-        if (c.salaryDate && o.dates.indexOf(c.salaryDate) < 0) o.dates.push(c.salaryDate);
+        if (!out[n]) { out[n] = { salaries: [], dates: [] }; order.push(n); }
+        if (c.salary && out[n].salaries.indexOf(c.salary) < 0) out[n].salaries.push(c.salary);
+        if (c.salaryDate && out[n].dates.indexOf(c.salaryDate) < 0) out[n].dates.push(c.salaryDate);
       });
     });
-    return Object.keys(out).map(function (k) {
-      var o = out[k];
-      o.salary = o.salaries.join(' / ');
-      o.amount = o.salaries.length ? parseMoney(o.salaries[0]) : 0;
-      o.date = o.dates.join(' / ');
-      o.next = o.dates.length ? nextPayday(o.dates[0]) : null;
-      return o;
-    }).sort(function (a, b) { return a.name.localeCompare(b.name); });
+    return order.filter(function (n) { return out[n].salaries.length; }).map(function (n) {
+      var m = String(out[n].dates[0] || '').match(/(\d{1,2})/);
+      return { source: 'CHANNEL', name: n, category: 'GAJI', amount: parseMoney(out[n].salaries[0]), label: out[n].salaries.join(' / '), day: m ? +m[1] : 0, schedule: out[n].dates.join(' / '), active: true };
+    });
+  }
+  function payrollActive() { return payrollAll().filter(function (x) { return x.active !== false && x.amount && x.day; }); }
+  function dueInMonth(day, anyDate) { return anyDate.slice(0, 8) + String(Math.min(day, +KPI.monthEnd(anyDate).slice(8))).padStart(2, '0'); }
+  function nextDue(day, t) {
+    var d = dueInMonth(day, t);
+    if (d < t) d = dueInMonth(day, KPI.addDays(KPI.monthEnd(t), 1));
+    return d;
+  }
+  function payrollBatches(limit) {
+    var t = today(), map = {};
+    payrollActive().forEach(function (x) { var d = nextDue(x.day, t); (map[d] = map[d] || []).push(x); });
+    return Object.keys(map).sort().slice(0, limit || 4).map(function (d) {
+      var items = map[d].slice().sort(function (a, b) { return (a.category === 'BIAYA') - (b.category === 'BIAYA') || b.amount - a.amount; });
+      return { date: d, items: items, daysLeft: daysBetween(t, d), total: items.reduce(function (s, x) { return s + x.amount; }, 0) };
+    });
+  }
+  function reminderDays() {
+    var raw = D().admin && D().admin.configRaw;
+    var n = parseInt(raw && raw.REMINDER_DAYS_BEFORE, 10);
+    return n >= 0 ? n : 5;
+  }
+  function activeReminder() {
+    if (!isAdmin() || !S.data) return null;
+    var b = payrollBatches(1)[0];
+    return b && b.daysLeft <= reminderDays() ? b : null;
+  }
+  function reminderBanner() {
+    var b = activeReminder();
+    if (!b) return '';
+    return '<a class="remind-banner" href="#/admin" data-act="admin-tab" data-v="payroll">' + icon('bell') +
+      '<div class="grow"><div><b>Gajian ' + esc(fmtDate(b.date, { weekday: 'long', day: 'numeric', month: 'long' })) + '</b> · ' + (b.daysLeft === 0 ? 'hari ini' : b.daysLeft + ' hari lagi') + '</div>' +
+      '<div class="xs">' + b.items.length + ' item · total <b>Rp ' + fmtN(b.total) + '</b></div></div><span class="btn sm">Lihat rincian</span></a>';
+  }
+  function notifSupported() { return 'Notification' in window; }
+  function showDeviceNotification(title, body, tag) {
+    var opts = { body: body, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', tag: tag, data: { url: './index.html#/admin' } };
+    try {
+      if (navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
+        navigator.serviceWorker.getRegistration().then(function (reg) { if (reg) reg.showNotification(title, opts); else new Notification(title, opts); })
+          .catch(function () { try { new Notification(title, opts); } catch (e) { } });
+      } else new Notification(title, opts);
+    } catch (e) { }
+  }
+  /** Notifikasi perangkat (admin) saat aplikasi dibuka pada masa H-N. */
+  function maybeNotifyPayroll() {
+    var b = activeReminder();
+    if (!b || !notifSupported() || Notification.permission !== 'granted') return;
+    var key = 'notified_' + b.date + '_' + today();
+    if (Store.get(key)) return;
+    Store.set(key, '1');
+    showDeviceNotification('🔔 Gajian ' + fmtDate(b.date, { weekday: 'long', day: 'numeric', month: 'long' }) + (b.daysLeft === 0 ? ' (hari ini)' : ' (H-' + b.daysLeft + ')'),
+      b.items.length + ' item · total Rp ' + fmtN(b.total), 'payroll-' + b.date);
   }
 
   function adminView() {
@@ -1025,27 +1173,31 @@
       var divs = {};
       chs.forEach(function (c) { divs[c.division] = 1; });
       return '<tr><td><div class="row">' + personAvatar(e.name, 'sm') + '<div class="col"><span class="bold">' + esc(cap(e.name)) + '</span>' + (e.notes ? '<span class="xs muted ellipsis" style="max-width:220px">' + esc(e.notes) + '</span>' : '') + '</div></div></td>' +
-        '<td>' + (e.role === 'ADMIN' ? '<span class="badge st-warning">' + icon('admin') + 'Admin</span>' : '<span class="badge st-none">Karyawan</span>') + '</td>' +
+        '<td>' + posBadge(e) + '</td>' +
+        '<td>' + (e.role === 'ADMIN' ? '<span class="badge st-warning">' + icon('lock') + 'Admin + gaji</span>' : '<span class="badge st-none">Staff</span>') + '</td>' +
         '<td>' + (e.active ? '<span class="badge st-good">' + icon('check') + 'Aktif</span>' : '<span class="badge st-critical">' + icon('x') + 'Nonaktif</span>') + '</td>' +
         '<td><span class="row" style="gap:4px">' + Object.keys(divs).map(divBadge).join('') + '</span></td><td class="num">' + chs.length + '</td>' +
-        '<td><button class="btn ghost sm" data-act="show-pin" data-pin="' + esc(e.pin) + '"><span class="num">••••••</span></button></td>' +
+        '<td>' + (e.pin ? '<button class="btn ghost sm" data-act="show-pin" data-pin="' + esc(e.pin) + '"><span class="num">••••••</span></button>' : '<span class="badge st-none">Tanpa akun</span>') + '</td>' +
         '<td class="right"><button class="btn ghost sm" data-act="edit-emp" data-name="' + esc(e.name) + '">' + icon('edit') + 'Ubah</button></td></tr>';
     }).join('');
     return '<div class="row between mb wrap"><p class="small muted grow">Karyawan baru dari kolom <b>RELEVANT EMPLOYEES</b> otomatis ditambahkan dengan PIN acak. Bagikan PIN ke masing-masing karyawan.</p>' +
       '<button class="btn" data-act="edit-emp" data-name="">' + icon('plus') + 'Tambah</button></div>' +
-      '<div class="card pad-0"><div class="table-wrap"><table class="table"><thead><tr><th>Nama</th><th>Peran</th><th>Status</th><th>Divisi</th><th class="num">Channel</th><th>PIN</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+      '<div class="card pad-0"><div class="table-wrap"><table class="table"><thead><tr><th>Nama</th><th>Jabatan</th><th>Akses</th><th>Status</th><th>Divisi</th><th class="num">Channel</th><th>PIN</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div></div>';
   }
 
   function empModal(name) {
     var emps = (D().admin && D().admin.employees) || [];
-    var e = emps.filter(function (x) { return x.name === name; })[0] || { name: '', role: 'EMPLOYEE', pin: '', active: true, notes: '' };
+    var e = emps.filter(function (x) { return x.name === name; })[0] || { name: '', role: 'EMPLOYEE', pin: '', active: true, notes: '', position: 'STAFF', login: true };
+    var pos = posOf(e), canLogin = e.login !== false && (!!e.pin || !e.name);
     var isNew = !e.name;
     openModal({
       title: isNew ? 'Tambah karyawan' : 'Ubah ' + esc(cap(e.name)),
       body: '<form data-form="emp" id="emp-form"><div class="field"><label>Nama</label><input class="input" name="name" value="' + esc(e.name) + '"' + (isNew ? ' required' : ' readonly') + ' placeholder="Sesuai kolom RELEVANT EMPLOYEES">' + (isNew ? '' : '<div class="hint">Untuk mengganti nama, ubah langsung di sheet EMPLOYEES & CHANNEL REPORT.</div>') + '</div>' +
-        '<div class="form-row"><div class="field"><label>Peran</label><select class="input" name="role"><option value="EMPLOYEE"' + (e.role !== 'ADMIN' ? ' selected' : '') + '>Karyawan</option><option value="ADMIN"' + (e.role === 'ADMIN' ? ' selected' : '') + '>Admin (bisa lihat gaji)</option></select></div>' +
-        '<div class="field"><label>PIN ' + (isNew ? '' : '<span class="muted">(kosongkan = tetap)</span>') + '</label><input class="input" name="pin" inputmode="numeric" pattern="[0-9]{4,8}" maxlength="8" placeholder="' + (isNew ? 'acak jika kosong' : '••••••') + '"></div></div>' +
-        '<div class="field"><label class="row between"><span>Aktif (bisa login & dihitung KPI)</span><span class="switch"><input type="checkbox" name="active"' + (e.active ? ' checked' : '') + '><span></span></span></label></div>' +
+        '<div class="form-row"><div class="field"><label>Jabatan</label><select class="input" name="position">' + [['STAFF', 'Staff'], ['MANAGER', 'Manager'], ['BOSS', 'Bos']].map(function (o) { return '<option value="' + o[0] + '"' + (pos === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select><div class="hint">Manager & bos tidak masuk peringkat KPI.</div></div>' +
+        '<div class="field"><label>Akses aplikasi</label><select class="input" name="role"><option value="EMPLOYEE"' + (e.role !== 'ADMIN' ? ' selected' : '') + '>Staff (tanpa gaji)</option><option value="ADMIN"' + (e.role === 'ADMIN' ? ' selected' : '') + '>Admin (akses penuh + gaji)</option></select></div></div>' +
+        '<div class="field"><label class="row between"><span>Bisa login ke aplikasi</span><span class="switch"><input type="checkbox" name="login"' + (canLogin ? ' checked' : '') + '><span></span></span></label><div class="hint">Matikan untuk orang yang hanya tercantum di struktur tim (misalnya bos).</div></div>' +
+        '<div class="field"><label>PIN ' + (isNew || !e.pin ? '' : '<span class="muted">(kosongkan = tetap)</span>') + '</label><input class="input" name="pin" inputmode="numeric" pattern="[0-9]{4,8}" maxlength="8" placeholder="' + (isNew || !e.pin ? 'acak jika kosong' : '••••••') + '"></div>' +
+        '<div class="field"><label class="row between"><span>Aktif (tampil di tim & dihitung KPI)</span><span class="switch"><input type="checkbox" name="active"' + (e.active ? ' checked' : '') + '><span></span></span></label></div>' +
         '<div class="field"><label>Catatan</label><input class="input" name="notes" value="' + esc(e.notes) + '"></div></form>',
       foot: '<button class="btn ghost" data-act="modal-close">Batal</button><button class="btn" data-act="save-emp">Simpan</button>'
     });
@@ -1075,12 +1227,13 @@
     var names = ((D().admin && D().admin.employees) || []).map(function (e) { return e.name; });
     openModal({
       title: isNew ? 'Tambah channel' : 'Ubah channel', wide: true,
-      body: '<form id="ch-form"><div class="form-row"><div class="field"><label>Nama channel (kolom CHANNEL NAME)</label><input class="input" name="name" value="' + esc(c.name) + '" required></div>' +
+      body: '<form id="ch-form"><div class="form-row"><div class="field"><label>Nama channel (kolom CHANNEL NAME)</label><input class="input" name="name" value="' + esc(c.name) + '" required>' + (isNew ? '' : '<div class="hint">Aman diganti: laporan lama ikut pindah ke nama baru.</div>') + '</div>' +
         '<div class="field"><label>Tipe / divisi</label><select class="input" name="type">' + types.map(function (t) { return '<option' + (c.type === t ? ' selected' : '') + '>' + esc(t) + '</option>'; }).join('') + '</select></div></div>' +
         '<div class="field"><label>Link channel YouTube</label><input class="input" name="link" value="' + esc(c.link || '') + '" placeholder="https://youtube.com/@namachannel">' + (c.linkNote ? '<div class="hint">Isi sheet saat ini: ' + esc(c.linkNote) + '</div>' : '') + '</div>' +
         '<div class="form-row"><div class="field"><label>Indikator tugas</label><input class="input" name="indicator" value="' + esc(c.indicator) + '" list="task-list2"><datalist id="task-list2">' + TASKS.map(function (x) { return '<option value="' + x + '">'; }).join('') + '</datalist></div>' +
         '<div class="field"><label>Target (' + esc(String(cfg().TARGET_PERIOD || 'DAILY')) + ')</label><input class="input" name="target" type="number" min="0" step="0.5" value="' + esc(c.target) + '"></div></div>' +
         '<div class="field"><label>Karyawan (pisahkan dengan koma)</label><input class="input" name="employees" value="' + esc(c.employees.join(', ')) + '" list="emp-list"><datalist id="emp-list">' + names.map(function (n) { return '<option value="' + esc(n) + '">'; }).join('') + '</datalist><div class="hint">Nama baru otomatis dibuatkan akun dengan PIN acak.</div></div>' +
+        '<div class="form-row"><div class="field"><label>Durasi minimal per video (menit)</label><input class="input" name="minDuration" type="number" min="0" step="1" value="' + esc(c.minDuration || '') + '" placeholder="kosong = tanpa batas"><div class="hint">Video di bawah durasi ini ditandai & tidak dihitung sebagai "Upload YT".</div></div><div></div></div>' +
         '<div class="field"><label>Catatan</label><textarea class="input" name="notes" rows="2">' + esc(c.notes) + '</textarea></div>' +
         '<div class="notice mb">' + icon('lock').replace('<svg ', '<svg width="14" height="14" style="vertical-align:-2px" ') + ' Data gaji hanya terlihat oleh admin.</div>' +
         '<div class="form-row"><div class="field"><label>Gaji (kolom SALARY)</label><input class="input" name="salary" value="' + esc(c.salary || '') + '" placeholder="Rp 2.800.000"></div>' +
@@ -1090,19 +1243,63 @@
   }
 
   function adminPayroll() {
-    var rows = payrollRows(), t = today();
-    var total = rows.reduce(function (s, p) { return s + p.amount; }, 0);
-    var html = rows.map(function (p) {
-      var dd = p.next ? daysBetween(t, p.next) : null;
-      return '<tr><td><div class="row">' + personAvatar(p.name, 'sm') + '<span class="bold">' + esc(cap(p.name)) + '</span></div></td><td class="nowrap">' + esc(p.salary || '—') + '</td>' +
-        '<td>' + esc(p.date || '—') + '</td><td>' + (p.next ? esc(fmtDate(p.next, { weekday: 'short', day: 'numeric', month: 'short' })) + ' <span class="xs muted">(' + (dd === 0 ? 'hari ini' : dd + ' hari') + ')</span>' : '—') + '</td><td class="num">' + p.channels + '</td></tr>';
+    var all = payrollAll(), act = payrollActive(), a = D().admin || {};
+    var hasSheet = !!a.payroll;
+    var monthly = act.reduce(function (s, x) { return s + x.amount; }, 0);
+    var staffTotal = act.filter(function (x) { return x.source === 'CHANNEL'; }).reduce(function (s, x) { return s + x.amount; }, 0);
+    var extraTotal = monthly - staffTotal;
+    var batches = payrollBatches(2), rd = reminderDays();
+    var lock = icon('lock').replace('<svg ', '<svg width="14" height="14" style="vertical-align:-2px" ');
+    function catBadge(x) { return x.category === 'BIAYA' ? '<span class="badge div-STAFF">Biaya</span>' : '<span class="badge div-DEV">Gaji</span>'; }
+    var batchCards = batches.map(function (b) {
+      var soon = b.daysLeft <= rd;
+      return '<div class="card"><div class="card-head"><div class="col"><h2>' + esc(fmtDate(b.date, { weekday: 'long', day: 'numeric', month: 'long' })) + '</h2><span class="sub">Batch tanggal ' + (+b.date.slice(8)) + '</span></div>' +
+        '<span class="badge ' + (soon ? 'st-warning' : 'st-none') + '">' + icon(soon ? 'bell' : 'calendar') + (b.daysLeft === 0 ? 'Hari ini' : b.daysLeft + ' hari lagi') + '</span></div><div class="list">' +
+        b.items.map(function (x) {
+          return '<div class="list-item">' + (x.category === 'BIAYA' ? '<div class="stat-icon">' + icon('wallet') + '</div>' : personAvatar(x.name, 'sm')) + '<div class="col grow"><span class="bold">' + esc(x.category === 'BIAYA' ? x.name : cap(x.name)) + '</span><span class="row" style="gap:6px">' + catBadge(x) + (x.source === 'PAYROLL' && x.category === 'GAJI' ? '<span class="xs muted">sheet PAYROLL</span>' : '') + '</span></div><div class="bold num nowrap">Rp ' + fmtN(x.amount) + '</div></div>';
+        }).join('') + '<div class="list-item"><div class="grow bold">Total</div><div class="bold num" style="font-size:18px">Rp ' + fmtN(b.total) + '</div></div></div></div>';
     }).join('');
-    return '<div class="notice mb">' + icon('lock').replace('<svg ', '<svg width="14" height="14" style="vertical-align:-2px" ') + ' Halaman ini hanya untuk admin. Data gaji tidak pernah dikirim ke perangkat karyawan.</div>' +
-      '<div class="grid grid-3 mb"><div class="card stat"><div class="label">Estimasi total gaji / bulan</div><div class="value num">Rp ' + fmtN(total) + '</div><div class="delta muted">dari kolom SALARY</div></div>' +
-      '<div class="card stat"><div class="label">Karyawan bergaji</div><div class="value num">' + rows.filter(function (p) { return p.amount; }).length + '</div><div class="delta muted">dari ' + rows.length + ' karyawan</div></div>' +
-      '<div class="card stat"><div class="label">Gajian terdekat</div><div class="value num" style="font-size:22px">' + (function () { var n = rows.filter(function (p) { return p.next; }).sort(function (a, b) { return a.next < b.next ? -1 : 1; })[0]; return n ? esc(fmtDate(n.next, { day: 'numeric', month: 'long' })) : '—'; })() + '</div><div class="delta muted">&nbsp;</div></div></div>' +
-      '<div class="card pad-0"><div class="table-wrap"><table class="table"><thead><tr><th>Karyawan</th><th>Gaji</th><th>Jadwal</th><th>Gajian berikutnya</th><th class="num">Channel</th></tr></thead><tbody>' + html + '</tbody></table></div></div>' +
-      '<p class="xs muted mt-sm">Gaji dibaca dari kolom SALARY per baris channel. Ubah lewat tab Channel atau langsung di spreadsheet.</p>';
+    var extraRows = all.filter(function (x) { return x.source === 'PAYROLL'; }).map(function (x) {
+      return '<tr><td class="bold">' + esc(x.category === 'BIAYA' ? x.name : cap(x.name)) + (x.notes ? '<div class="xs muted">' + esc(x.notes) + '</div>' : '') + '</td><td>' + catBadge(x) + '</td><td class="num bold">Rp ' + fmtN(x.amount) + '</td><td>Tgl ' + esc(x.day) + '</td>' +
+        '<td>' + (x.active !== false ? '<span class="badge st-good">' + icon('check') + 'Aktif</span>' : '<span class="badge st-none">Nonaktif</span>') + '</td>' +
+        '<td class="right nowrap"><button class="btn ghost sm" data-act="edit-pay" data-row="' + x.row + '">' + icon('edit') + 'Ubah</button> <button class="btn ghost icon sm" data-act="del-pay" data-row="' + x.row + '" aria-label="Hapus">' + icon('trash') + '</button></td></tr>';
+    }).join('');
+    var staffRows = all.filter(function (x) { return x.source === 'CHANNEL'; }).sort(function (p, q) { return p.name.localeCompare(q.name); }).map(function (x) {
+      return '<tr><td><div class="row">' + personAvatar(x.name, 'sm') + '<span class="bold">' + esc(cap(x.name)) + '</span></div></td><td class="nowrap">' + esc(x.label || ('Rp ' + fmtN(x.amount))) + '</td><td>' + esc(x.schedule || '—') + '</td><td>' + (x.day ? esc(fmtDate(nextDue(x.day, today()), { weekday: 'short', day: 'numeric', month: 'short' })) : '—') + '</td></tr>';
+    }).join('');
+    var notifState = !notifSupported() ? '<span class="badge st-none">Tidak didukung browser ini</span>' : Notification.permission === 'granted' ? '<span class="badge st-good">' + icon('check') + 'Aktif di perangkat ini</span>' : Notification.permission === 'denied' ? '<span class="badge st-critical">Diblokir. Izinkan lewat pengaturan browser</span>' : '<button class="btn ghost sm" data-act="enable-notif">' + icon('bell') + 'Aktifkan notifikasi di perangkat ini</button>';
+    return '<div class="notice mb">' + lock + ' Halaman ini hanya untuk admin (Arya & Zul). Data gaji tidak pernah dikirim ke perangkat staff.</div>' +
+      '<div class="grid grid-4 mb">' +
+      '<div class="card stat"><div class="label">Total pengeluaran rutin / bulan</div><div class="value num" style="font-size:24px">Rp ' + fmtN(monthly) + '</div><div class="delta muted">gaji + biaya tetap</div></div>' +
+      '<div class="card stat"><div class="label">Gaji staff</div><div class="value num" style="font-size:24px">Rp ' + fmtN(staffTotal) + '</div><div class="delta muted">kolom SALARY (CHANNEL REPORT)</div></div>' +
+      '<div class="card stat"><div class="label">Gaji manager & biaya</div><div class="value num" style="font-size:24px">Rp ' + fmtN(extraTotal) + '</div><div class="delta muted">sheet PAYROLL</div></div>' +
+      '<div class="card stat"><div class="label">Gajian berikutnya</div><div class="value num" style="font-size:24px">' + (batches[0] ? esc(fmtDate(batches[0].date, { day: 'numeric', month: 'short' })) : '—') + '</div><div class="delta muted">' + (batches[0] ? (batches[0].daysLeft === 0 ? 'hari ini' : batches[0].daysLeft + ' hari lagi') : '&nbsp;') + '</div></div></div>' +
+      (batchCards ? '<div class="grid grid-2 mb">' + batchCards + '</div>' : '') +
+      '<div class="card mb"><div class="card-head"><h2 class="row">' + icon('bell') + 'Pengingat otomatis</h2></div>' +
+      '<div class="list"><div class="list-item"><div class="col grow"><div class="bold">Email H-' + rd + ' sebelum setiap tanggal gajian</div><div class="xs muted">Dikirim ke: ' + esc((a.reminderTo || []).join(', ') || '(email pemilik spreadsheet)') + '. Ubah penerima di tab Pengaturan.</div></div>' +
+      (hasSheet ? '<button class="btn ghost sm" data-act="test-reminder">' + icon('bell') + 'Kirim email tes</button>' : '<span class="xs muted">Perlu backend 1.2.0</span>') + '</div>' +
+      '<div class="list-item"><div class="col grow"><div class="bold">Notifikasi di HP / PC ini</div><div class="xs muted">Muncul saat aplikasi dibuka pada H-' + rd + ' sampai hari-H. Email tetap jadi pengingat utama karena terkirim walau aplikasi tidak dibuka.</div></div>' + notifState + '</div></div></div>' +
+      '<div class="card pad-0 mb"><div style="padding:18px 20px 6px"><div class="card-head"><div class="col"><h2>Gaji manager & biaya tetap</h2><span class="sub">Sheet PAYROLL. Bisa diubah di sini atau langsung di spreadsheet.</span></div>' +
+      (hasSheet ? '<button class="btn sm" data-act="edit-pay" data-row="">' + icon('plus') + 'Tambah</button>' : '') + '</div></div>' +
+      (extraRows ? '<div class="table-wrap"><table class="table"><thead><tr><th>Nama / keterangan</th><th>Jenis</th><th class="num">Nominal</th><th>Jatuh tempo</th><th>Status</th><th></th></tr></thead><tbody>' + extraRows + '</tbody></table></div>' : '<div class="empty">' + (hasSheet ? 'Belum ada data.' : 'Pasang backend 1.2.0 untuk mengaktifkan sheet PAYROLL.') + '</div>') + '</div>' +
+      '<div class="card pad-0"><div style="padding:18px 20px 6px"><div class="card-head"><div class="col"><h2>Gaji staff</h2><span class="sub">Dari kolom SALARY & DATE OF SALARY di CHANNEL REPORT. Ubah lewat tab Channel.</span></div></div></div>' +
+      '<div class="table-wrap"><table class="table"><thead><tr><th>Karyawan</th><th>Gaji</th><th>Jadwal</th><th>Gajian berikutnya</th></tr></thead><tbody>' + staffRows + '</tbody></table></div></div>';
+  }
+
+  function payModal(row) {
+    var x = payrollAll().filter(function (p) { return p.source === 'PAYROLL' && String(p.row) === String(row); })[0] || { name: '', category: 'GAJI', amount: '', day: 10, active: true, notes: '' };
+    var isNew = !x.row;
+    openModal({
+      title: isNew ? 'Tambah gaji / biaya' : 'Ubah ' + esc(x.category === 'BIAYA' ? x.name : cap(x.name)),
+      body: '<form id="pay-form"><input type="hidden" name="row" value="' + esc(x.row || '') + '">' +
+        '<div class="form-row"><div class="field"><label>Jenis</label><select class="input" name="category"><option value="GAJI"' + (x.category !== 'BIAYA' ? ' selected' : '') + '>Gaji (nama orang)</option><option value="BIAYA"' + (x.category === 'BIAYA' ? ' selected' : '') + '>Biaya (sewa, langganan, dll.)</option></select></div>' +
+        '<div class="field"><label>Nama / keterangan</label><input class="input" name="name" value="' + esc(x.name) + '" placeholder="ZUL atau Sewa ruang kerja" required></div></div>' +
+        '<div class="form-row"><div class="field"><label>Nominal (Rp)</label><input class="input" name="amount" inputmode="numeric" value="' + esc(x.amount ? fmtN(x.amount) : '') + '" placeholder="10.000.000" required></div>' +
+        '<div class="field"><label>Tanggal jatuh tempo (1–31)</label><input class="input" name="day" type="number" min="1" max="31" value="' + esc(x.day || '') + '" required><div class="hint">Setiap bulan. Pengingat email H-' + reminderDays() + '.</div></div></div>' +
+        '<div class="field"><label class="row between"><span>Aktif (dihitung & diingatkan)</span><span class="switch"><input type="checkbox" name="active"' + (x.active !== false ? ' checked' : '') + '><span></span></span></label></div>' +
+        '<div class="field"><label>Catatan</label><input class="input" name="notes" value="' + esc(x.notes || '') + '"></div></form>',
+      foot: '<button class="btn ghost" data-act="modal-close">Batal</button><button class="btn" data-act="save-pay">Simpan ke spreadsheet</button>'
+    });
   }
 
   function adminConfig() {
@@ -1125,7 +1322,14 @@
       '<div class="field"><label>Zona waktu</label><input class="input" name="TIMEZONE" value="' + esc(c.TIMEZONE || 'Asia/Jakarta') + '"></div>' +
       '<div class="row wrap"><button type="button" class="btn ghost" data-act="sync-yt"' + (S.syncing ? ' disabled' : '') + '>' + icon('refresh') + 'Sinkron YouTube sekarang</button></div>' +
       '<div class="divider"></div><div class="small text-2">Versi backend: <b>' + esc(D().backendVersion || '-') + '</b> · Aplikasi: <b>' + esc(APP_VERSION) + '</b></div>' +
-      '</div><div style="grid-column:1/-1" class="row"><button type="button" class="btn" data-act="save-config">' + icon('check') + 'Simpan pengaturan</button></div></form>';
+      '</div>' + (function () {
+        var raw = (D().admin && D().admin.configRaw) || {};
+        if (raw.REMINDER_DAYS_BEFORE == null) return '';
+        return '<div class="card" style="grid-column:1/-1"><h2 class="mb row">' + icon('bell') + 'Pengingat gajian (khusus admin)</h2><div class="form-row">' +
+          '<div class="field"><label>Email penerima (pisahkan koma)</label><input class="input" name="REMINDER_EMAILS" value="' + esc(raw.REMINDER_EMAILS || '') + '" placeholder="arya@gmail.com, zul@gmail.com"><div class="hint">Kosong = email pemilik spreadsheet' + ((D().admin.reminderTo || []).length ? ' (' + esc(D().admin.reminderTo.join(', ')) + ')' : '') + '.</div></div>' +
+          '<div class="form-row"><div class="field"><label>Kirim H-berapa</label><input class="input" type="number" min="0" max="27" name="REMINDER_DAYS_BEFORE" value="' + esc(raw.REMINDER_DAYS_BEFORE) + '"></div>' +
+          '<div class="field"><label>Jam kirim (0–23)</label><input class="input" type="number" min="0" max="23" name="REMINDER_HOUR" value="' + esc(raw.REMINDER_HOUR || 8) + '"></div></div></div></div>';
+      })() + '<div style="grid-column:1/-1" class="row"><button type="button" class="btn" data-act="save-config">' + icon('check') + 'Simpan pengaturan</button></div></form>';
   }
 
   /* =========================================================
@@ -1137,7 +1341,7 @@
     return pageHead('Pengaturan', 'Tema, akun, dan pembaruan aplikasi.') +
       '<div class="grid grid-2"><div class="col" style="gap:16px">' +
       '<div class="card"><h2 class="mb">Tampilan</h2><div class="seg">' + themeSeg() + '</div><p class="xs muted mt-sm">Terang: cerah & ceria. Gelap: minimalis-elegan.</p></div>' +
-      '<div class="card"><h2 class="mb">Akun</h2><div class="row mb">' + personAvatar(u.name, 'lg') + '<div class="col"><div class="bold">' + esc(cap(u.name)) + '</div><div class="small muted">' + (u.role === 'ADMIN' ? 'Admin / Owner' : 'Karyawan') + '</div></div></div>' +
+      '<div class="card"><h2 class="mb">Akun</h2><div class="row mb">' + personAvatar(u.name, 'lg') + '<div class="col"><div class="bold">' + esc(cap(u.name)) + '</div><div class="small muted">' + esc(roleLabel(u)) + '</div></div></div>' +
       '<form data-form="pin"><div class="form-row"><div class="field"><label>PIN lama</label><input class="input" name="old" type="password" inputmode="numeric" maxlength="8" required></div>' +
       '<div class="field"><label>PIN baru (4–8 angka)</label><input class="input" name="new" type="password" inputmode="numeric" pattern="[0-9]{4,8}" maxlength="8" required></div></div>' +
       '<button class="btn ghost">Ganti PIN</button></form><div class="divider"></div>' +
@@ -1240,12 +1444,56 @@
       if (!f.name) return toast('Nama wajib diisi.', 'error');
       if (f.pin && !/^\d{4,8}$/.test(f.pin)) return toast('PIN harus 4–8 digit angka.', 'error');
       el.disabled = true;
-      API.call('saveEmployee', { employee: { name: f.name, role: f.role, pin: f.pin, active: f.active, notes: f.notes } }).then(function (res) {
+      API.call('saveEmployee', { employee: { name: f.name, role: f.role, position: f.position, login: f.login, pin: f.login ? f.pin : '', active: f.active, notes: f.notes } }).then(function (res) {
         if (D().admin) D().admin.employees = res.employees;
         closeModal(); toast('Karyawan disimpan ✓'); render(); loadData(true);
       }).catch(function (e) { el.disabled = false; handleErr(e); });
     },
     'edit-channel': function (el) { channelModal(el.dataset.key); },
+    'toggle-pin': function (el) {
+      var i = $('#pin-input'); if (!i) return;
+      i.type = i.type === 'password' ? 'text' : 'password';
+      el.setAttribute('aria-label', i.type === 'password' ? 'Tampilkan PIN' : 'Sembunyikan PIN');
+      i.focus();
+    },
+    'edit-pay': function (el) { payModal(el.dataset.row); },
+    'save-pay': function (el) {
+      var f = formData($('#pay-form'));
+      if (!String(f.name || '').trim()) return toast('Nama / keterangan wajib diisi.', 'error');
+      if (!parseMoney(f.amount)) return toast('Nominal wajib diisi.', 'error');
+      if (!(+f.day >= 1 && +f.day <= 31)) return toast('Tanggal harus 1–31.', 'error');
+      el.disabled = true;
+      API.call('savePayrollItem', { item: { row: f.row, name: f.name, category: f.category, amount: parseMoney(f.amount), day: +f.day, active: f.active, notes: f.notes } }).then(function (res) {
+        if (D().admin) D().admin.payroll = res.payroll;
+        closeModal(); toast('Tersimpan ke sheet PAYROLL ✓'); render();
+      }).catch(function (e) { el.disabled = false; handleErr(e); });
+    },
+    'del-pay': function (el) {
+      var x = payrollAll().filter(function (p) { return p.source === 'PAYROLL' && String(p.row) === el.dataset.row; })[0];
+      if (!x) return;
+      confirmBox('Hapus ' + (x.category === 'BIAYA' ? x.name : cap(x.name)) + '?', 'Baris ini akan dihapus dari sheet PAYROLL dan tidak lagi diingatkan.', 'Hapus', true).then(function (ok) {
+        if (!ok) return;
+        API.call('deletePayrollItem', { row: x.row, name: x.name }).then(function (res) {
+          if (D().admin) D().admin.payroll = res.payroll;
+          toast('Dihapus.'); render();
+        }).catch(handleErr);
+      });
+    },
+    'test-reminder': function (el) {
+      el.disabled = true;
+      API.call('sendReminderTest').then(function (r) { el.disabled = false; toast('Email tes terkirim ke ' + r.to.join(', ') + ' ✓'); })
+        .catch(function (e) { el.disabled = false; handleErr(e); });
+    },
+    'enable-notif': function () {
+      if (!notifSupported()) return toast('Browser ini tidak mendukung notifikasi.', 'error');
+      Notification.requestPermission().then(function (p) {
+        if (p === 'granted') {
+          showDeviceNotification('Notifikasi aktif ✓', 'Kamu akan diingatkan H-' + reminderDays() + ' sebelum setiap tanggal gajian saat membuka aplikasi.', 'notif-test');
+          toast('Notifikasi aktif di perangkat ini ✓');
+        } else toast('Izin notifikasi tidak diberikan.', 'error');
+        render();
+      });
+    },
     'save-channel': function (el) {
       var f = formData($('#ch-form'));
       if (!String(f.name || '').trim()) return toast('Nama channel wajib diisi.', 'error');
@@ -1270,6 +1518,11 @@
         WEIGHT_DISCIPLINE: f.WEIGHT_DISCIPLINE, BACKDATE_DAYS: f.BACKDATE_DAYS, EMPLOYEE_SEE_ALL: f.EMPLOYEE_SEE_ALL ? 'TRUE' : 'FALSE',
         SYNC_CURRENT_RESULT: f.SYNC_CURRENT_RESULT ? 'TRUE' : 'FALSE', YT_SYNC_HOURS: f.YT_SYNC_HOURS, YT_MAX_VIDEOS: f.YT_MAX_VIDEOS, TIMEZONE: f.TIMEZONE
       };
+      if (f.REMINDER_DAYS_BEFORE !== undefined) {
+        var bad = String(f.REMINDER_EMAILS || '').split(/[,;\s]+/).filter(function (x) { return x && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x); });
+        if (bad.length) return toast('Email tidak valid: ' + bad.join(', '), 'error');
+        conf.REMINDER_EMAILS = f.REMINDER_EMAILS; conf.REMINDER_DAYS_BEFORE = f.REMINDER_DAYS_BEFORE; conf.REMINDER_HOUR = f.REMINDER_HOUR;
+      }
       el.disabled = true;
       API.call('saveConfig', { config: conf }).then(function () { toast('Pengaturan disimpan ✓'); loadData(); })
         .catch(function (e) { el.disabled = false; handleErr(e); });
@@ -1312,15 +1565,23 @@
       var kind = form.dataset.form;
       var f = formData(form);
       if (kind === 'login') {
-        var btn = $('#login-btn');
+        var btn = $('#login-btn'), errBox = $('#login-error');
+        var pin = String(f.pin || '');
+        try { pin = pin.normalize('NFKC'); } catch (e2) { }
+        pin = pin.replace(/[^0-9]/g, '');
+        if (errBox) errBox.classList.add('hidden');
+        if (!pin) { if (errBox) { errBox.textContent = 'PIN hanya berisi angka.'; errBox.classList.remove('hidden'); } return; }
         btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Masuk…';
-        API.call('login', { name: f.name, pin: f.pin }).then(function (res) {
+        API.call('login', { name: String(f.name || '').trim(), pin: pin }).then(function (res) {
           S.token = res.token; S.user = res.user;
           Store.set('token', res.token); Store.setJSON('user', res.user);
           S.data = null; S.form = null;
           location.hash = '#/home';
           render(); loadData(); loadYT(true);
-        }).catch(function (e) { btn.disabled = false; btn.textContent = 'Masuk'; toast(e.message, 'error'); });
+        }).catch(function (e) {
+          btn.disabled = false; btn.textContent = 'Masuk';
+          if (errBox) { errBox.textContent = e.message; errBox.classList.remove('hidden'); } else toast(e.message, 'error');
+        });
       } else if (kind === 'report') {
         submitReport(form);
       } else if (kind === 'pin') {

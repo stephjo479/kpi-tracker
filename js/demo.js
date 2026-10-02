@@ -4,7 +4,7 @@
  * spreadsheet terhubung. Login demo: OWNER / 1234 (admin), RINA / 1111 (karyawan).
  */
 var Demo = (function () {
-  var KEY = 'demoDB_v1';
+  var KEY = 'demoDB_v3';
   var NAMES = { DEV: 'DEV CHANNEL', STAFF: 'STAFF CHANNEL', CLIENT: 'CLIENT CHANNEL' };
 
   function pad(n) { return (n < 10 ? '0' : '') + n; }
@@ -16,8 +16,9 @@ var Demo = (function () {
   function build() {
     var r = rng(7), t = today();
     var employees = [
-      { name: 'OWNER', role: 'ADMIN', pin: '1234', active: true, notes: 'Akun pemilik (demo)' },
-      { name: 'RINA', role: 'EMPLOYEE', pin: '1111', active: true, notes: '' },
+      { name: 'OWNER', role: 'ADMIN', pin: '1234', active: true, notes: 'Manager (demo)', position: 'MANAGER' },
+      { name: 'PAK BOS', role: 'EMPLOYEE', pin: '', active: true, notes: 'Bos (demo, tanpa akun)', position: 'BOSS' },
+      { name: 'RINA', role: 'EMPLOYEE', pin: '1111', active: true, notes: '', position: 'STAFF' },
       { name: 'BAYU', role: 'EMPLOYEE', pin: '2222', active: true, notes: '' },
       { name: 'SARI', role: 'EMPLOYEE', pin: '3333', active: true, notes: '' },
       { name: 'DIMAS', role: 'EMPLOYEE', pin: '4444', active: true, notes: '' },
@@ -26,7 +27,7 @@ var Demo = (function () {
     ];
     var rows = [
       ['@kuliner.nusantara', 'DEV CHANNEL', 'https://youtube.com/@kuliner.nusantara', 2, 'RINA', 'Rp 3.000.000 (Probation)', '10th every month', 'Target 10 video/orang/hari, dibagi ke channel yang dipegang.'],
-      ['@lofi.senja', 'DEV CHANNEL', 'https://youtube.com/@lofi.senja', 2, 'RINA', 'Rp 3.000.000 (Probation)', '10th every month', ''],
+      ['@lofi.senja', 'DEV CHANNEL', 'https://youtube.com/@lofi.senja', 2, 'RINA', 'Rp 3.000.000 (Probation)', '10th every month', 'Playlist musik, durasi minimal 60 menit.'],
       ['@data.banding', 'DEV CHANNEL', 'https://youtube.com/@data.banding', 2, 'BAYU', 'Rp 3.000.000 (Probation)', '10th every month', ''],
       ['@jalan.jalan.id', 'DEV CHANNEL', 'https://youtube.com/@jalan.jalan.id', 2, 'BAYU', 'Rp 3.000.000 (Probation)', '10th every month', ''],
       ['vlog.harian@contoh.com', 'STAFF CHANNEL', 'https://youtube.com/@vlog.harian', 10, 'SARI', 'Rp 3.200.000', '23rd every month', ''],
@@ -40,7 +41,7 @@ var Demo = (function () {
       return {
         row: i + 3, key: x[0], name: x[0], type: x[1], division: div(x[1]), link: x[2],
         linkNote: x[2] ? '' : '(Klien belum membagikan link channel)', indicator: 'PRODUCTION', target: x[3], current: 0,
-        notes: x[7], employees: [x[4]], salary: x[5], salaryDate: x[6]
+        notes: x[7], employees: [x[4]], salary: x[5], salaryDate: x[6], minDuration: x[0] === '@lofi.senja' ? 60 : 0
       };
     });
     var reports = [];
@@ -64,9 +65,14 @@ var Demo = (function () {
       config: {
         COMPANY_NAME: 'Studio Demo', TIMEZONE: 'Asia/Jakarta', WORK_DAYS: '1,2,3,4,5', TARGET_PERIOD: 'DAILY',
         WEIGHT_OUTPUT: '80', WEIGHT_DISCIPLINE: '20', SYNC_CURRENT_RESULT: 'TRUE', EMPLOYEE_SEE_ALL: 'TRUE',
-        BACKDATE_DAYS: '3', REPORT_DAYS_LOADED: '120', YT_SYNC_HOURS: '3', YT_MAX_VIDEOS: '50'
+        BACKDATE_DAYS: '3', REPORT_DAYS_LOADED: '120', YT_SYNC_HOURS: '3', YT_MAX_VIDEOS: '50',
+        REMINDER_DAYS_BEFORE: '5', REMINDER_EMAILS: '', REMINDER_HOUR: '8'
       },
-      lastSync: Date.now() - 42 * 60 * 1000
+      lastSync: Date.now() - 42 * 60 * 1000,
+      payroll: [
+        { name: 'OWNER', category: 'GAJI', amount: 10000000, day: 10, active: true, notes: 'Gaji Manager (demo)' },
+        { name: 'Sewa ruang kerja', category: 'BIAYA', amount: 5000000, day: 10, active: true, notes: 'Dibayar setiap bulan' }
+      ]
     };
   }
 
@@ -171,13 +177,13 @@ var Demo = (function () {
       c.current = d.reports.filter(function (r) { return r.channel === c.key && r.date === t; }).reduce(function (s, r) { return s + r.qty; }, 0);
     });
     var out = {
-      user: { name: u.name, role: u.role }, today: t, serverTime: new Date().toISOString(), backendVersion: 'demo',
+      user: { name: u.name, role: u.role, position: u.position || 'STAFF' }, today: t, serverTime: new Date().toISOString(), backendVersion: 'demo',
       config: d.config, channels: d.channels.map(function (c) { return strip(c, admin); }),
-      employees: d.employees.filter(function (e) { return seeAll || e.name === u.name || e.role === 'ADMIN'; }).map(function (e) { return { name: e.name, role: e.role, active: e.active }; }),
+      employees: d.employees.filter(function (e) { return seeAll || e.name === u.name || e.role === 'ADMIN' || e.position; }).map(function (e) { return { name: e.name, role: e.role, active: e.active, position: e.position || 'STAFF', login: !!e.pin }; }),
       reports: d.reports.filter(function (r) { return seeAll || r.employee === u.name; }),
       ytLastSync: d.lastSync
     };
-    if (admin) out.admin = { employees: JSON.parse(JSON.stringify(d.employees)), spreadsheetUrl: '', configRaw: d.config };
+    if (admin) out.admin = { employees: d.employees.map(function (e) { return Object.assign({}, e, { position: e.position || 'STAFF', login: !!e.pin }); }), spreadsheetUrl: '', configRaw: d.config, payroll: payrollItems(), reminderTo: ['owner@contoh.com'] };
     return out;
   }
   function clean(r, u) {
@@ -203,11 +209,11 @@ var Demo = (function () {
 
   var A = {
     ping: function () { return { backendVersion: 'demo' }; },
-    publicInfo: function () { var d = load(); return { company: d.config.COMPANY_NAME, backendVersion: 'demo', employees: d.employees.filter(function (e) { return e.active; }).map(function (e) { return e.name; }).sort() }; },
+    publicInfo: function () { var d = load(); return { company: d.config.COMPANY_NAME, backendVersion: 'demo', employees: d.employees.filter(function (e) { return e.active && e.pin; }).map(function (e) { return e.name; }).sort(), managers: d.employees.filter(function (e) { return e.active && e.position === 'MANAGER'; }).map(function (e) { return e.name; }) }; },
     login: function (b) {
       var e = load().employees.filter(function (x) { return x.name === String(b.name || '').toUpperCase() && x.active; })[0];
-      if (!e || e.pin !== String(b.pin)) throw new Error('Nama atau PIN salah.');
-      return { token: 'demo.' + e.name, user: { name: e.name, role: e.role } };
+      if (!e || !e.pin || e.pin !== String(b.pin)) throw new Error('Nama atau PIN salah.');
+      return { token: 'demo.' + e.name, user: { name: e.name, role: e.role, position: e.position || 'STAFF' } };
     }
   };
   var AUTH = {
@@ -246,6 +252,7 @@ var Demo = (function () {
       Object.keys(f).forEach(function (k) {
         if (k === 'employees') c.employees = (Array.isArray(f[k]) ? f[k] : String(f[k]).split(/[,&]/)).map(function (s) { return s.trim().toUpperCase(); }).filter(Boolean);
         else if (k === 'target') c.target = Number(f[k]) || 0;
+        else if (k === 'minDuration') c.minDuration = Number(f[k]) || 0;
         else c[k] = f[k];
       });
       if (f.name) { var old = c.key; c.key = c.name = f.name.trim(); d.reports.forEach(function (r) { if (r.channel === old) r.channel = c.key; }); }
@@ -268,13 +275,44 @@ var Demo = (function () {
       var d = load(), e = b.employee, name = String(e.name || '').trim().toUpperCase();
       if (!name) throw new Error('Nama wajib diisi.');
       var f = d.employees.filter(function (x) { return x.name === name; })[0];
-      if (f) { f.role = e.role; f.active = e.active !== false; if (e.pin) f.pin = String(e.pin); if (e.notes != null) f.notes = e.notes; }
-      else d.employees.push({ name: name, role: e.role || 'EMPLOYEE', pin: String(e.pin || Math.floor(100000 + Math.random() * 900000)), active: e.active !== false, notes: e.notes || '' });
-      save(); return { employees: JSON.parse(JSON.stringify(d.employees)) };
+      var pin = e.login === false ? '' : String(e.pin || (f && f.pin) || Math.floor(100000 + Math.random() * 900000));
+      if (f) { f.role = e.role; f.active = e.active !== false; f.pin = pin; f.position = e.position || 'STAFF'; if (e.notes != null) f.notes = e.notes; }
+      else d.employees.push({ name: name, role: e.role || 'EMPLOYEE', pin: pin, active: e.active !== false, notes: e.notes || '', position: e.position || 'STAFF' });
+      save(); return { employees: d.employees.map(function (x) { return Object.assign({}, x, { position: x.position || 'STAFF', login: !!x.pin }); }) };
     },
     saveConfig: function (b) { var d = load(); Object.assign(d.config, b.config || {}); save(); return { config: d.config }; },
-    syncYouTube: function () { load().lastSync = Date.now(); save(); return ytAll(); }
+    syncYouTube: function () { load().lastSync = Date.now(); save(); return ytAll(); },
+    savePayrollItem: function (b) {
+      var d = load(), it = b.item || {};
+      if (!String(it.name || '').trim()) throw new Error('Nama / keterangan wajib diisi.');
+      var row = { name: it.category === 'BIAYA' ? String(it.name).trim() : String(it.name).trim().toUpperCase(), category: it.category === 'BIAYA' ? 'BIAYA' : 'GAJI', amount: Number(it.amount) || 0, day: Number(it.day) || 0, active: it.active !== false, notes: it.notes || '' };
+      var i = Number(it.row) - 2;
+      if (i >= 0 && d.payroll[i]) d.payroll[i] = row; else d.payroll.push(row);
+      save(); return { payroll: payrollItems() };
+    },
+    deletePayrollItem: function (b) { var d = load(); d.payroll.splice(Number(b.row) - 2, 1); save(); return { payroll: payrollItems() }; },
+    sendReminderTest: function () { return { to: ['owner@contoh.com'], date: '', total: 0, items: 0 }; }
   };
+  function payrollItems() {
+    var d = load(), people = {}, order = [];
+    if (!d.payroll) d.payroll = [];
+    var inPay = {};
+    d.payroll.forEach(function (x) { if (x.category === 'GAJI') inPay[x.name] = 1; });
+    d.channels.forEach(function (c) {
+      c.employees.forEach(function (n) {
+        if (inPay[n]) return;
+        if (!people[n]) { people[n] = { s: [], dt: [] }; order.push(n); }
+        if (c.salary && people[n].s.indexOf(c.salary) < 0) people[n].s.push(c.salary);
+        if (c.salaryDate && people[n].dt.indexOf(c.salaryDate) < 0) people[n].dt.push(c.salaryDate);
+      });
+    });
+    var out = order.filter(function (n) { return people[n].s.length; }).map(function (n) {
+      var m = String(people[n].dt[0] || '').match(/(\d{1,2})/);
+      return { source: 'CHANNEL', name: n, category: 'GAJI', amount: Number(String(people[n].s[0]).replace(/\D/g, '')) || 0, label: people[n].s.join(' / '), day: m ? +m[1] : 0, schedule: people[n].dt.join(' / '), active: true, notes: '' };
+    });
+    d.payroll.forEach(function (x, i) { out.push(Object.assign({ source: 'PAYROLL', row: i + 2, label: '', schedule: 'Tanggal ' + x.day + ' setiap bulan' }, x)); });
+    return out;
+  }
   function ensureEmployees() {
     var d = load(), have = {};
     d.employees.forEach(function (e) { have[e.name] = 1; });

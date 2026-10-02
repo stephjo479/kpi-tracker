@@ -11,6 +11,7 @@
  *   Capaian output   = total jumlah di laporan ÷ target periode
  *   Disiplin laporan = hari kerja yang ada laporannya ÷ hari kerja yang sudah lewat
  *   Skor KPI         = (min(capaian,100%) × bobot output + disiplin × bobot disiplin) ÷ total bobot
+ *   Manager & Bos (kolom POSITION = MANAGER / BOSS) tidak ikut dihitung.
  */
 var KPI = (function () {
   function pad(n) { return (n < 10 ? '0' : '') + n; }
@@ -71,6 +72,10 @@ var KPI = (function () {
 
   function up(s) { return String(s || '').trim().toUpperCase(); }
 
+  /** Jabatan pimpinan (kolom POSITION di sheet EMPLOYEES). */
+  var LEADER_POSITIONS = ['BOSS', 'MANAGER'];
+  function isLeader(e) { return !!e && LEADER_POSITIONS.indexOf(up(e.position)) >= 0; }
+
   /**
    * opts = { channels, reports, employees, from, to, today, config }
    *  channels : [{ key, name, division, target, employees:[NAMA] }]
@@ -87,9 +92,13 @@ var KPI = (function () {
     var chByKey = {};
     (opts.channels || []).forEach(function (c) { chByKey[c.key] = c; });
 
+    // Manager & bos tidak masuk peringkat KPI
+    var excluded = {};
+    (opts.employees || []).forEach(function (e) { if (isLeader(e)) excluded[up(e.name)] = true; });
+
     function emp(name) {
       var k = up(name);
-      if (!k) return null;
+      if (!k || excluded[k]) return null;
       if (!emps[k]) { emps[k] = { name: k, channels: {}, target: 0, actual: 0, reportDays: {}, daily: {}, divisions: {} }; order.push(k); }
       return emps[k];
     }
@@ -188,7 +197,7 @@ var KPI = (function () {
   }
 
   return {
-    compute: compute, periodRange: periodRange, grade: grade, dailyTarget: dailyTarget,
+    compute: compute, periodRange: periodRange, grade: grade, dailyTarget: dailyTarget, isLeader: isLeader,
     normalizeConfig: normalizeConfig, addDays: addDays, dow: dow, workdays: workdays,
     isWorkday: isWorkday, monthStart: monthStart, monthEnd: monthEnd, eachDay: eachDay
   };

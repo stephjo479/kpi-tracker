@@ -423,3 +423,24 @@ th.sortable:hover { color: var(--text); }
 .daycheck input { display: none; }
 .daycheck input:checked + span { color: var(--accent-text); }
 .daycheck label:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); }
+
+/* ========================= JABATAN ========================= */
+.pos-MANAGER { background: var(--accent-soft); color: var(--accent-text); }
+.pos-BOSS { background: var(--hero); color: var(--hero-ink); border: 1px solid var(--accent); }
+.avatar.pos-BOSS svg, .badge.pos-BOSS svg { color: inherit; }
+
+/* ========================= PENGINGAT & PIN ========================= */
+.remind-banner {
+  display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 14px; margin-bottom: 18px; flex-wrap: wrap;
+  background: var(--warning-soft); color: var(--warning-text); border: 1px solid var(--border); text-decoration: none !important;
+}
+.remind-banner > svg { width: 22px; height: 22px; flex-shrink: 0; }
+.remind-banner .grow { min-width: 180px; }
+.nav-item { position: relative; }
+.nav-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--critical); margin-left: auto; flex-shrink: 0; }
+.bottom-nav .nav-dot { position: absolute; top: 4px; right: calc(50% - 16px); margin: 0; }
+.pin-wrap { position: relative; }
+.pin-wrap .input.pin { padding-right: 48px; padding-left: 48px; }
+.pin-eye { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); border: 0; background: none; color: var(--muted); padding: 8px; cursor: pointer; border-radius: 8px; }
+.pin-eye:hover { color: var(--text); background: var(--surface-2); }
+.pin-eye svg { width: 20px; height: 20px; display: block; }
