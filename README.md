@@ -73,7 +73,9 @@ Server hanya mengirim kolom SALARY & DATE OF SALARY ke akun dengan peran **ADMIN
 
 - Kirim link aplikasi + PIN masing-masing (dari sheet `EMPLOYEES`).
 - **Install di HP:** Android/Chrome → menu ⋮ → **Install app**. iPhone/Safari → **Share → Add to Home Screen**.
-- **Laptop:** Chrome/Edge → ikon install di address bar.
+- **PC / laptop (Windows/Mac):** buka link di **Chrome** atau **Edge** → klik tombol **"Pasang di PC"** di aplikasi (atau ikon *Install* di kolom alamat).
+  Aplikasi muncul di Start Menu, bisa di-pin ke taskbar, terbuka di jendela sendiri, dan menerima update yang sama seperti di HP.
+  Klik kanan ikon di taskbar untuk pintasan cepat: *Isi laporan*, *KPI*, *Channel*.
 - Karyawan bisa mengganti PIN sendiri di menu **Akun**.
 
 ---

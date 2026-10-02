@@ -374,6 +374,7 @@
     var side = '<aside class="sidebar"><div class="brand"><div class="brand-logo">' + icon('logo') + '</div><div class="col"><div class="brand-name">' + esc(company) + '</div><div class="brand-sub">KPI & Channel Tracker</div></div></div>' +
       navItems.map(function (n) { return '<a class="nav-item ' + (active === n.id ? 'active' : '') + '" href="#/' + n.id + '">' + icon(n.icon) + n.label + '</a>'; }).join('') +
       '<div class="nav-spacer"></div>' +
+      (isStandalone() ? '' : '<div class="mb">' + installButton('block sm', 'Pasang di PC') + '</div>') +
       (API.isDemo() ? '<div class="notice warn xs mb">Mode demo — data fiktif</div>' : '') +
       '<div class="user-card">' + personAvatar(u.name) + '<div class="col grow"><div class="bold ellipsis">' + esc(cap(u.name)) + '</div><div class="xs muted">' + (u.role === 'ADMIN' ? 'Admin / Owner' : 'Karyawan') + '</div></div>' +
       '<button class="btn ghost icon sm" data-act="cycle-theme" title="Ganti tema">' + icon(effectiveDark() ? 'moon' : 'sun') + '</button></div></aside>';
@@ -437,6 +438,7 @@
       }
     });
     return '<div class="login-wrap"><div class="card login-card"><div class="login-logo">' + icon('logo') + '</div>' + body +
+      (isStandalone() ? '' : '<div class="mt-sm">' + installButton('block sm', isDesktop() ? 'Pasang aplikasi di PC ini' : 'Pasang aplikasi di perangkat ini') + '</div>') +
       '<div class="row between mt"><span class="xs muted">v' + esc(APP_VERSION) + '</span>' +
       '<div class="seg">' + themeSeg() + '</div></div></div></div>';
   }
@@ -610,6 +612,53 @@
       '<div class="grid grid-main mt"><div class="card"><div class="card-head"><h2>Video naik (24 jam)</h2><a class="small" href="#/channels">Semua channel</a></div><div class="list">' + (tv.length ? tv.map(function (x) { return videoRow(x, true); }).join('') : emptyYT()) + '</div></div>' +
       '<div class="card"><div class="card-head"><h2 class="row">' + icon('lock').replace('<svg ', '<svg width="16" height="16" ') + 'Jadwal gajian</h2><a class="small" href="#/admin" data-act="admin-tab" data-v="payroll">Detail</a></div><div class="list">' + payHtml + '</div><div class="xs muted mt-sm">Hanya terlihat oleh admin.</div></div></div>' +
       installHint();
+  }
+
+  function isStandalone() {
+    return !!((window.matchMedia && (matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: window-controls-overlay)').matches)) || navigator.standalone);
+  }
+  function platform() {
+    var ua = navigator.userAgent || '';
+    if (/iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return 'ios';
+    if (/Android/i.test(ua)) return 'android';
+    if (/Windows/i.test(ua)) return 'windows';
+    if (/Macintosh/i.test(ua)) return 'mac';
+    return 'other';
+  }
+  function isDesktop() { var p = platform(); return p === 'windows' || p === 'mac' || p === 'other'; }
+  function browserName() {
+    var ua = navigator.userAgent || '';
+    if (/Edg\//.test(ua)) return 'edge';
+    if (/Firefox\//.test(ua)) return 'firefox';
+    if (/Chrome\//.test(ua)) return 'chrome';
+    if (/Safari\//.test(ua)) return 'safari';
+    return 'other';
+  }
+  function installGuide() {
+    var p = platform(), b = browserName();
+    var steps = {
+      pc: '<li><b>Google Chrome</b>: klik ikon <b>Install</b> (gambar monitor dengan panah ke bawah) di ujung kanan kolom alamat. Atau menu <b>⋮ → Cast, save, and share → Install page as app</b>.</li>' +
+        '<li><b>Microsoft Edge</b>: menu <b>⋯ → Apps → Install this site as an app</b>.</li>' +
+        '<li>Setelah terpasang, aplikasi muncul di <b>Start Menu</b> dan bisa di-<b>pin ke taskbar</b> (klik kanan ikon → Pin to taskbar).</li>' +
+        (b === 'firefox' || b === 'safari' ? '<li class="down">Browser ini belum mendukung pemasangan aplikasi. Buka link ini di Chrome atau Edge.</li>' : ''),
+      mac: '<li><b>Chrome</b>: ikon <b>Install</b> di kolom alamat, atau menu <b>⋮ → Cast, save, and share → Install page as app</b>.</li>' +
+        '<li><b>Safari</b> (macOS Sonoma ke atas): menu <b>File → Add to Dock</b>.</li>',
+      android: '<li><b>Chrome</b>: menu <b>⋮ → Install app</b> / <b>Tambahkan ke layar utama</b>.</li>',
+      ios: '<li><b>Safari</b>: tombol <b>Share</b> (kotak dengan panah ke atas) → <b>Add to Home Screen</b> → <b>Add</b>.</li>'
+    };
+    var key = p === 'windows' || p === 'other' ? 'pc' : p;
+    return '<ol class="small text-2" style="margin:0;padding-left:20px;line-height:1.8">' + steps[key] + '</ol>';
+  }
+  function openInstallGuide() {
+    openModal({
+      title: isDesktop() ? 'Pasang aplikasi di PC / laptop' : 'Pasang aplikasi di HP',
+      body: installGuide() + '<div class="notice mt small">Aplikasi yang terpasang terbuka di jendela sendiri (tanpa tab browser) dan otomatis menawarkan pembaruan saat ada versi baru.</div>',
+      foot: '<button class="btn" data-act="modal-close">Mengerti</button>'
+    });
+  }
+  function installButton(cls, label) {
+    if (isStandalone()) return '';
+    return '<button class="btn ghost ' + (cls || '') + '" data-act="install">' + icon('download') + esc(label || 'Pasang aplikasi') + '</button>';
   }
 
   function installHint() {
@@ -1084,7 +1133,7 @@
      ========================================================= */
   function settingsView() {
     var u = S.user;
-    var standalone = window.matchMedia && matchMedia('(display-mode: standalone)').matches;
+    var standalone = isStandalone();
     return pageHead('Pengaturan', 'Tema, akun, dan pembaruan aplikasi.') +
       '<div class="grid grid-2"><div class="col" style="gap:16px">' +
       '<div class="card"><h2 class="mb">Tampilan</h2><div class="seg">' + themeSeg() + '</div><p class="xs muted mt-sm">Terang: cerah & ceria. Gelap: minimalis-elegan.</p></div>' +
@@ -1098,8 +1147,8 @@
       '<div class="list-item"><div class="grow">Rilis</div><span>' + esc(typeof APP_RELEASE_DATE !== 'undefined' ? fmtDate(APP_RELEASE_DATE, { day: 'numeric', month: 'long', year: 'numeric' }) : '-') + '</span></div>' +
       '<div class="list-item"><div class="grow">Mode</div><span>' + (standalone ? 'Terpasang di perangkat' : 'Browser') + (API.isDemo() ? ' · Demo' : '') + '</span></div></div>' +
       '<div class="row wrap mt">' + (S.update ? '<button class="btn" data-act="apply-update">' + icon('download') + 'Perbarui ke ' + esc(S.update.v) + '</button>' : '<button class="btn ghost" data-act="check-update">' + icon('refresh') + 'Cek pembaruan</button>') +
-      (S.installEvt ? '<button class="btn ghost" data-act="install">' + icon('download') + 'Pasang aplikasi</button>' : '') + '</div>' +
-      (!standalone && !S.installEvt ? '<p class="xs muted mt-sm">Pasang ke layar utama: di Android/Chrome pilih menu ⋮ → <b>Install app</b>; di iPhone (Safari) tekan <b>Share</b> → <b>Add to Home Screen</b>.</p>' : '') +
+      installButton() + '</div>' +
+      (!standalone ? '<div class="mt"><div class="small bold" style="margin-bottom:6px">Cara memasang di perangkat ini</div>' + installGuide() + '</div>' : '') +
       '<div class="divider"></div><h3 class="mb">Catatan rilis ' + esc(APP_VERSION) + '</h3><ul class="small text-2" style="margin:0;padding-left:18px">' + (APP_RELEASE_NOTES || []).map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') + '</ul></div>' +
       (isAdmin() || API.isDemo() ? '<div class="card"><h2 class="mb">Server</h2>' + (API.isDemo() ? '<p class="small text-2 mb">Sedang memakai data demo (fiktif).</p><button class="btn ghost" data-act="demo-off">Keluar dari mode demo</button>' :
         '<form data-form="server"><div class="field"><label>URL Web App</label><input class="input" name="url" value="' + esc(API.url()) + '"><div class="hint">Hanya untuk perangkat ini. Untuk semua karyawan, ubah API_URL di config.js.</div></div><button class="btn ghost">Simpan</button></form>') + '</div>' : '') +
@@ -1137,9 +1186,10 @@
       }).catch(function () { toast('Gagal memeriksa pembaruan.', 'error'); render(); });
     },
     install: function () {
-      if (!S.installEvt) return;
-      S.installEvt.prompt();
-      S.installEvt.userChoice.then(function () { S.installEvt = null; render(); });
+      if (!S.installEvt) { openInstallGuide(); return; }
+      var evt = S.installEvt;
+      try { evt.prompt(); } catch (e) { openInstallGuide(); return; }
+      evt.userChoice.then(function (c) { if (c && c.outcome === 'accepted') S.installEvt = null; render(); }).catch(function () { });
     },
     'hide-install': function () { Store.set('hideInstall', '1'); render(); },
     qty: function (el) {
@@ -1288,6 +1338,7 @@
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal(); });
     window.addEventListener('hashchange', function () { closeModal(); render(); window.scrollTo(0, 0); });
     window.addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); S.installEvt = e; if (canRerender()) render(); });
+    window.addEventListener('appinstalled', function () { S.installEvt = null; closeModal(); toast('Aplikasi terpasang ✓ Cari "KPI Tracker" di Start Menu / layar utama.'); render(); });
     if (window.matchMedia) matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function () { if (theme() === 'system' && canRerender()) render(); });
     document.addEventListener('visibilitychange', function () {
       if (document.visibilityState === 'visible' && S.token && Date.now() - (S._lastPoll || 0) > 20000) { S._lastPoll = Date.now(); loadData(true); }
