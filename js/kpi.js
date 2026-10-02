@@ -7,11 +7,13 @@
  * Kalau mengubah rumus KPI, ubah di sini lalu salin juga ke Kpi.gs.
  *
  * Rumus:
- *   Target periode   = Σ (target harian channel × hari kerja yang sudah lewat)
- *   Capaian output   = total jumlah di laporan ÷ target periode
- *   Disiplin laporan = hari kerja yang ada laporannya ÷ hari kerja yang sudah lewat
- *   Skor KPI         = (min(capaian,100%) × bobot output + disiplin × bobot disiplin) ÷ total bobot
- *   Manager & Bos (kolom POSITION = MANAGER / BOSS) tidak ikut dihitung.
+ *   Hari dihitung     = hari kerja yang sudah lewat, DIKURANGI hari izin/sakit/cuti yang disetujui
+ *   Target periode    = Σ (target harian channel × hari dihitung)
+ *   Capaian output    = total jumlah di laporan ÷ target periode
+ *   Disiplin laporan  = hari dihitung yang ada laporannya ÷ hari dihitung
+ *   Kehadiran         = (tepat waktu × 100% + terlambat × nilai terlambat + alpa × 0%) ÷ hari wajib hadir
+ *   Skor KPI          = (min(capaian,100%) × bobot output + disiplin × bobot laporan + kehadiran × bobot kehadiran) ÷ total bobot
+ *   Manager & Bos (kolom POSITION = MANAGER / BOSS) tidak masuk peringkat KPI (tetapi tetap ikut absensi, kecuali Bos).
  */
 var KPI = (function () {
   function pad(n) { return (n < 10 ? '0' : '') + n; }
@@ -23,18 +25,30 @@ var KPI = (function () {
   function eachDay(from, to, fn) { for (var d = from; d <= to; d = addDays(d, 1)) fn(d); }
   function monthStart(d) { return d.slice(0, 8) + '01'; }
   function monthEnd(d) { var y = +d.slice(0, 4), m = +d.slice(5, 7); return fmt(new Date(Date.UTC(y, m, 0))); }
+  /** '09:05' / '9.05' / '09:05:33' → menit sejak 00:00 */
+  function toMin(t) { var m = String(t == null ? '' : t).match(/(\d{1,2})[:.](\d{2})/); return m ? (+m[1]) * 60 + (+m[2]) : null; }
+  function up(s) { return String(s || '').trim().toUpperCase(); }
+  function num(v, def) { var n = Number(v); return v === '' || v == null || !isFinite(n) ? def : n; }
+  function pick(c, a, b, def) { return c[a] != null ? c[a] : (c[b] != null ? c[b] : def); }
 
   function normalizeConfig(c) {
     c = c || {};
+    if (c._normalized) return c;
     var wd = c.workDays || c.WORK_DAYS || '1,2,3,4,5';
     if (typeof wd === 'string') wd = wd.split(/[,\s]+/).map(Number).filter(function (x) { return x >= 1 && x <= 7; });
-    var wo = Number(c.weightOutput != null ? c.weightOutput : (c.WEIGHT_OUTPUT != null ? c.WEIGHT_OUTPUT : 80));
-    var wdisc = Number(c.weightDiscipline != null ? c.weightDiscipline : (c.WEIGHT_DISCIPLINE != null ? c.WEIGHT_DISCIPLINE : 20));
     return {
+      _normalized: true,
       workDays: wd.length ? wd : [1, 2, 3, 4, 5],
       targetPeriod: String(c.targetPeriod || c.TARGET_PERIOD || 'DAILY').toUpperCase(),
-      weightOutput: isFinite(wo) ? wo : 80,
-      weightDiscipline: isFinite(wdisc) ? wdisc : 20
+      weightOutput: num(pick(c, 'weightOutput', 'WEIGHT_OUTPUT'), 80),
+      weightDiscipline: num(pick(c, 'weightDiscipline', 'WEIGHT_DISCIPLINE'), 20),
+      weightAttendance: num(pick(c, 'weightAttendance', 'WEIGHT_ATTENDANCE'), 0),
+      workStart: toMin(pick(c, 'workStart', 'WORK_START', '09:00')) != null ? toMin(pick(c, 'workStart', 'WORK_START', '09:00')) : 540,
+      workEnd: toMin(pick(c, 'workEnd', 'WORK_END', '17:00')) != null ? toMin(pick(c, 'workEnd', 'WORK_END', '17:00')) : 1020,
+      lateGrace: num(pick(c, 'lateGrace', 'LATE_GRACE_MIN'), 0),
+      lateScore: num(pick(c, 'lateScore', 'ATTENDANCE_LATE_SCORE'), 50) / 100,
+      lateFine: num(pick(c, 'lateFine', 'LATE_FINE'), 10000),
+      attendanceStart: String(pick(c, 'attendanceStart', 'ATTENDANCE_START', '') || '').slice(0, 10)
     };
   }
 
@@ -70,14 +84,84 @@ var KPI = (function () {
     return { code: 'D', label: 'Perlu perhatian', status: 'critical' };
   }
 
-  function up(s) { return String(s || '').trim().toUpperCase(); }
-
   /** Jabatan pimpinan (kolom POSITION di sheet EMPLOYEES). */
   var LEADER_POSITIONS = ['BOSS', 'MANAGER'];
   function isLeader(e) { return !!e && LEADER_POSITIONS.indexOf(up(e.position)) >= 0; }
+  /** Wajib absensi: aktif, punya akun login, dan bukan Bos. */
+  function mustAttend(e) {
+    if (!e || e.active === false || up(e.position) === 'BOSS') return false;
+    if (e.login === false) return false;
+    if (e.pin !== undefined && !String(e.pin)) return false;
+    return true;
+  }
+
+  /* ------------------------- ABSENSI ------------------------- */
+  var EXCUSE_TYPES = ['TIDAK_MASUK', 'SAKIT', 'CUTI'];
+  /** Izin yang DISETUJUI → { NAMA: { excused: {tgl: tipe}, lateOk: {tgl: true} } } */
+  function permIndex(perms) {
+    var idx = {};
+    (perms || []).forEach(function (p) {
+      if (up(p.status) !== 'APPROVED' || !p.from) return;
+      var n = up(p.name), t = up(p.type);
+      var o = idx[n] = idx[n] || { excused: {}, lateOk: {} };
+      var to = p.to && p.to >= p.from ? p.to : p.from;
+      if (to > addDays(p.from, 62)) to = addDays(p.from, 62);
+      eachDay(p.from, to, function (d) {
+        if (EXCUSE_TYPES.indexOf(t) >= 0) o.excused[d] = t;
+        else if (t === 'TERLAMBAT') o.lateOk[d] = true;
+      });
+    });
+    return idx;
+  }
+  function attIndex(att) {
+    var idx = {};
+    (att || []).forEach(function (r) { if (r.date && r.name) (idx[up(r.name)] = idx[up(r.name)] || {})[r.date] = r; });
+    return idx;
+  }
+  function lateMinutes(rec, cfg) { var m = toMin(rec && rec.in); return m == null ? 0 : Math.max(0, m - cfg.workStart); }
 
   /**
-   * opts = { channels, reports, employees, from, to, today, config }
+   * Rekap absensi per orang.
+   * opts = { attendance:[{date,name,in,out,otMin,early}], permissions:[{name,type,from,to,status}], employees, from, to, today, config, names? }
+   */
+  function attendanceRecap(opts) {
+    var cfg = normalizeConfig(opts.config);
+    var today = opts.today || opts.to;
+    var from = opts.from, to = opts.to > today ? today : opts.to;
+    if (cfg.attendanceStart && from < cfg.attendanceStart) from = cfg.attendanceStart;
+    var A = attIndex(opts.attendance), P = permIndex(opts.permissions);
+    var people = opts.names ? opts.names.map(up) : (opts.employees || []).filter(mustAttend).map(function (e) { return up(e.name); });
+    var out = {};
+    people.forEach(function (n) {
+      var r = { name: n, workdays: 0, present: 0, onTime: 0, late: 0, excusedLate: 0, lateMin: 0, izin: 0, sakit: 0, cuti: 0,
+        alpa: 0, overtimeMin: 0, overtimeDays: 0, early: 0, noCheckout: 0, fines: 0, rate: null, days: {} };
+      var a = A[n] || {}, p = P[n] || { excused: {}, lateOk: {} };
+      if (from <= to) eachDay(from, to, function (d) {
+        var work = isWorkday(d, cfg), rec = a[d], ex = p.excused[d];
+        if (rec && (Number(rec.otMin) || 0) > 0) { r.overtimeMin += Number(rec.otMin) || 0; r.overtimeDays++; }
+        if (!work) { if (rec && rec.in) r.days[d] = 'LIBUR_MASUK'; return; }
+        if (ex) { r.days[d] = ex; if (ex === 'SAKIT') r.sakit++; else if (ex === 'CUTI') r.cuti++; else r.izin++; return; }
+        if (rec && rec.in) {
+          r.workdays++; r.present++;
+          var lm = lateMinutes(rec, cfg);
+          if (lm > cfg.lateGrace) {
+            if (p.lateOk[d]) { r.excusedLate++; r.days[d] = 'TERLAMBAT_IZIN'; }
+            else { r.late++; r.lateMin += lm; r.fines += cfg.lateFine; r.days[d] = 'TERLAMBAT'; }
+          } else { r.onTime++; r.days[d] = 'TEPAT'; }
+          if (rec.early) r.early++;
+          if (!rec.out && d < today) r.noCheckout++;
+        } else if (d < today) { r.workdays++; r.alpa++; r.days[d] = 'ALPA'; }
+      });
+      var n2 = r.onTime + r.excusedLate + r.late + r.alpa;
+      r.rate = n2 ? (r.onTime + r.excusedLate + r.late * cfg.lateScore) / n2 : null;
+      out[n] = r;
+    });
+    return { from: from, to: to, config: cfg, map: out, list: people.map(function (n) { return out[n]; }) };
+  }
+
+  /* ------------------------- KPI ------------------------- */
+  /**
+   * opts = { channels, reports, employees, attendance, permissions, from, to, today, config }
    *  channels : [{ key, name, division, target, employees:[NAMA] }]
    *  reports  : [{ date:'yyyy-mm-dd', employee, channel(key), qty }]
    */
@@ -87,6 +171,9 @@ var KPI = (function () {
     var effTo = to > today ? today : to;
     var days = [];
     if (from <= effTo) eachDay(from, effTo, function (d) { if (isWorkday(d, cfg)) days.push(d); });
+    var P = permIndex(opts.permissions);
+    var useAtt = cfg.weightAttendance > 0 && !!opts.attendance;
+    var att = useAtt ? attendanceRecap({ attendance: opts.attendance, permissions: opts.permissions, employees: opts.employees, from: from, to: to, today: today, config: cfg, names: [] }) : null;
 
     var emps = {}, order = [];
     var chByKey = {};
@@ -99,7 +186,11 @@ var KPI = (function () {
     function emp(name) {
       var k = up(name);
       if (!k || excluded[k]) return null;
-      if (!emps[k]) { emps[k] = { name: k, channels: {}, target: 0, actual: 0, reportDays: {}, daily: {}, divisions: {} }; order.push(k); }
+      if (!emps[k]) {
+        var ex = (P[k] || {}).excused || {};
+        emps[k] = { name: k, channels: {}, target: 0, actual: 0, reportDays: {}, daily: {}, divisions: {}, days: days.filter(function (d) { return !ex[d]; }), excused: days.length - days.filter(function (d) { return !ex[d]; }).length };
+        order.push(k);
+      }
       return emps[k];
     }
     function chRow(e, key) {
@@ -123,7 +214,7 @@ var KPI = (function () {
         var row = chRow(e, c.key);
         row.assigned = true;
         e.divisions[c.division] = true;
-        days.forEach(function (d) {
+        e.days.forEach(function (d) {
           var t = dailyTarget(c.target, d, cfg) / names.length;
           row.target += t; e.target += t;
           if (!e.daily[d]) e.daily[d] = { t: 0, a: 0 };
@@ -143,15 +234,21 @@ var KPI = (function () {
       e.daily[r.date].a += q;
     });
 
-    var wSum = cfg.weightOutput + cfg.weightDiscipline || 1;
     var list = order.map(function (k) {
       var e = emps[k];
-      var reported = days.filter(function (d) { return e.reportDays[d]; }).length;
-      var discipline = days.length ? reported / days.length : null;
+      var reported = e.days.filter(function (d) { return e.reportDays[d]; }).length;
+      var discipline = e.days.length ? reported / e.days.length : null;
       var achievement = e.target > 0 ? e.actual / e.target : null;
+      var a = null;
+      if (att) {
+        a = attendanceRecap({ attendance: opts.attendance, permissions: opts.permissions, from: from, to: to, today: today, config: cfg, names: [k] }).map[k];
+      }
+      var attendance = a ? a.rate : null;
       var score = null;
       if (achievement != null) {
-        score = Math.round(((Math.min(achievement, 1) * cfg.weightOutput) + ((discipline || 0) * cfg.weightDiscipline)) / wSum * 100);
+        var w = cfg.weightOutput + cfg.weightDiscipline, s = Math.min(achievement, 1) * cfg.weightOutput + (discipline || 0) * cfg.weightDiscipline;
+        if (attendance != null) { w += cfg.weightAttendance; s += attendance * cfg.weightAttendance; }
+        score = Math.round(s / (w || 1) * 100);
       }
       var chans = Object.keys(e.channels).map(function (key) {
         var c = e.channels[key];
@@ -165,9 +262,12 @@ var KPI = (function () {
         target: Math.round(e.target * 100) / 100,
         actual: e.actual,
         achievement: achievement,
-        workdays: days.length,
+        workdays: e.days.length,
+        excusedDays: e.excused,
         reportedDays: reported,
         discipline: discipline,
+        attendance: attendance,
+        att: a,
         score: score,
         grade: grade(score),
         channels: chans,
@@ -181,6 +281,7 @@ var KPI = (function () {
     });
 
     var scored = list.filter(function (e) { return e.score != null; });
+    var withAtt = list.filter(function (e) { return e.attendance != null; });
     var tT = 0, tA = 0;
     list.forEach(function (e) { tT += e.target; tA += e.actual; });
     var summary = {
@@ -190,6 +291,7 @@ var KPI = (function () {
       actual: tA,
       achievement: tT > 0 ? tA / tT : null,
       avgDiscipline: scored.length ? scored.reduce(function (s, e) { return s + (e.discipline || 0); }, 0) / scored.length : null,
+      avgAttendance: withAtt.length ? withAtt.reduce(function (s, e) { return s + e.attendance; }, 0) / withAtt.length : null,
       workdays: days.length,
       days: days
     };
@@ -197,7 +299,8 @@ var KPI = (function () {
   }
 
   return {
-    compute: compute, periodRange: periodRange, grade: grade, dailyTarget: dailyTarget, isLeader: isLeader,
+    compute: compute, attendanceRecap: attendanceRecap, periodRange: periodRange, grade: grade, dailyTarget: dailyTarget,
+    isLeader: isLeader, mustAttend: mustAttend, toMin: toMin, lateMinutes: lateMinutes, permIndex: permIndex,
     normalizeConfig: normalizeConfig, addDays: addDays, dow: dow, workdays: workdays,
     isWorkday: isWorkday, monthStart: monthStart, monthEnd: monthEnd, eachDay: eachDay
   };

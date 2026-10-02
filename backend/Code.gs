@@ -12,7 +12,7 @@
  * ============================================================
  */
 
-var BACKEND_VERSION = '1.2.0';
+var BACKEND_VERSION = '1.3.0';
 
 var SHEETS = {
   CHANNELS: 'CHANNEL REPORT',
@@ -24,19 +24,25 @@ var SHEETS = {
   YT_VIDEOS: 'YT VIDEOS',
   YT_HISTORY: 'YT HISTORY',
   YT_CH_HISTORY: 'YT CHANNEL HISTORY',
-  PAYROLL: 'PAYROLL'
+  PAYROLL: 'PAYROLL',
+  ATTENDANCE: 'ATTENDANCE',
+  PERMISSIONS: 'IZIN',
+  ATT_RECAP: 'REKAP ABSENSI'
 };
 
 var HEADERS = {
   EMPLOYEES: ['NAME', 'ROLE', 'PIN', 'ACTIVE', 'NOTES', 'POSITION'],
   REPORTS: ['ID', 'TIMESTAMP', 'DATE', 'EMPLOYEE', 'CHANNEL', 'DIVISION', 'TASK', 'QTY', 'LINKS', 'NOTES', 'UPDATED BY'],
   CONFIG: ['KEY', 'VALUE', 'KETERANGAN'],
-  KPI: ['NAME', 'DIVISION', 'TARGET (BULAN INI)', 'ACTUAL', 'CAPAIAN', 'DISIPLIN LAPORAN', 'SKOR KPI', 'GRADE', 'TARGET HARI INI', 'ACTUAL HARI INI', 'UPDATED'],
+  KPI: ['NAME', 'DIVISION', 'TARGET (BULAN INI)', 'ACTUAL', 'CAPAIAN', 'DISIPLIN LAPORAN', 'SKOR KPI', 'GRADE', 'TARGET HARI INI', 'ACTUAL HARI INI', 'UPDATED', 'KEHADIRAN'],
   YT_CHANNELS: ['SHEET CHANNEL', 'CHANNEL ID', 'TITLE', 'HANDLE', 'THUMBNAIL', 'SUBSCRIBERS', 'TOTAL VIEWS', 'VIDEOS', 'UPDATED', 'STATUS'],
   YT_VIDEOS: ['VIDEO ID', 'CHANNEL ID', 'TITLE', 'PUBLISHED', 'THUMBNAIL', 'DURATION (s)', 'VIEWS', 'LIKES', 'COMMENTS', 'UPDATED'],
   YT_HISTORY: ['DATE', 'VIDEO ID', 'CHANNEL ID', 'VIEWS'],
   YT_CH_HISTORY: ['DATE', 'CHANNEL ID', 'SUBSCRIBERS', 'TOTAL VIEWS', 'VIDEOS'],
-  PAYROLL: ['NAME', 'CATEGORY', 'AMOUNT', 'DUE DAY', 'ACTIVE', 'NOTES']
+  PAYROLL: ['NAME', 'CATEGORY', 'AMOUNT', 'DUE DAY', 'ACTIVE', 'NOTES'],
+  ATTENDANCE: ['DATE', 'NAME', 'CHECK IN', 'CHECK OUT', 'LATE (MIN)', 'OVERTIME (MIN)', 'OVERTIME FOR', 'OVERTIME BY', 'EARLY LEAVE NOTE', 'NOTES', 'UPDATED BY'],
+  PERMISSIONS: ['ID', 'CREATED', 'NAME', 'TYPE', 'DATE FROM', 'DATE TO', 'TIME', 'REASON', 'ATTACHMENT ID', 'STATUS', 'REVIEWED BY', 'REVIEW NOTE', 'REVIEWED AT'],
+  ATT_RECAP: ['BULAN', 'NAME', 'JABATAN', 'HARI WAJIB HADIR', 'HADIR', 'TEPAT WAKTU', 'TERLAMBAT', 'TERLAMBAT (IZIN)', 'TOTAL MENIT TERLAMBAT', 'IZIN', 'SAKIT', 'CUTI', 'ALPA', 'LEMBUR (JAM)', 'PULANG AWAL', 'DENDA (Rp)', 'SKOR KEHADIRAN', 'UPDATED']
 };
 
 var DEFAULT_CONFIG = [
@@ -54,8 +60,16 @@ var DEFAULT_CONFIG = [
   ['YT_MAX_VIDEOS', '50', 'Jumlah video terbaru per channel yang dipantau'],
   ['REMINDER_DAYS_BEFORE', '5', 'Email pengingat gajian dikirim H-N sebelum tanggal gajian'],
   ['REMINDER_EMAILS', '', 'Penerima email pengingat gajian, pisahkan dengan koma. Kosong = email pemilik spreadsheet'],
-  ['REMINDER_HOUR', '8', 'Jam pengiriman email pengingat (0-23, zona waktu TIMEZONE)']
+  ['REMINDER_HOUR', '8', 'Jam pengiriman email pengingat (0-23, zona waktu TIMEZONE)'],
+  ['WORK_START', '09:00', 'Jam masuk kerja (HH:MM). Presensi sesudah jam ini = terlambat'],
+  ['WORK_END', '17:00', 'Jam pulang kerja (HH:MM). Presensi pulang sesudah jam ini ditanya lembur'],
+  ['LATE_GRACE_MIN', '0', 'Toleransi terlambat dalam menit (0 = tanpa toleransi)'],
+  ['LATE_FINE', '10000', 'Denda setiap kali terlambat (Rp)'],
+  ['ATTENDANCE_LATE_SCORE', '50', 'Nilai kehadiran (%) untuk hari terlambat. Tepat waktu = 100, alpa = 0'],
+  ['WEIGHT_ATTENDANCE', '20', 'Bobot kehadiran dalam skor KPI (%)'],
+  ['ATTENDANCE_START', '', 'Tanggal mulai absensi dihitung (yyyy-mm-dd, diisi otomatis saat setup)']
 ];
+var PERMISSION_TYPES = ['TERLAMBAT', 'TIDAK_MASUK', 'SAKIT', 'CUTI', 'PULANG_AWAL'];
 
 /**
  * UPDATE DATA 1.2.0 — diterapkan SEKALI oleh setup().
@@ -110,10 +124,14 @@ function setup() {
   ensureSheet_(SHEETS.YT_HISTORY, HEADERS.YT_HISTORY, { textCols: [1, 2] });
   ensureSheet_(SHEETS.YT_CH_HISTORY, HEADERS.YT_CH_HISTORY, { textCols: [1] });
   ensureSheet_(SHEETS.PAYROLL, HEADERS.PAYROLL);
+  ensureSheet_(SHEETS.ATTENDANCE, HEADERS.ATTENDANCE, { textCols: [1, 3, 4] });
+  ensureSheet_(SHEETS.PERMISSIONS, HEADERS.PERMISSIONS, { textCols: [5, 6, 7] });
+  ensureSheet_(SHEETS.ATT_RECAP, HEADERS.ATT_RECAP);
   ensureChannelExtraCols_();
   secret_();
   var teamMsg = applyTeamStructure_();
   var dataMsg = applyDataUpdateV120_();
+  var attMsg = applyDataUpdateV130_();
   var added = syncEmployees_();
 
   ScriptApp.getProjectTriggers().forEach(function (t) {
@@ -130,6 +148,7 @@ function setup() {
     '• Karyawan baru ditambahkan ke sheet EMPLOYEES: ' + added + '\n' +
     '• Struktur tim: ' + teamMsg + '\n' +
     '• Update data 1.2.0: ' + dataMsg + '\n' +
+    '• Absensi 1.3.0: ' + attMsg + '\n' +
     '• Email pengingat gajian (H-' + (config_().REMINDER_DAYS_BEFORE || 5) + ') ke: ' + reminderRecipients_().join(', ') + '\n' +
     '• Login admin: ' + (admins.length ? admins.map(function (a) { return a.name + ' / PIN ' + a.pin; }).join(' ; ') : '-') + '\n' +
     '• Sinkron YouTube: ' + ytMsg + '\n\n' +
@@ -168,6 +187,7 @@ function cronJob() {
   updateCurrentResults_();
   writeKpiSummary_();
   try { checkPayrollReminder_(); } catch (err) { console.error(err); }
+  try { writeAttendanceRecap_(); } catch (err) { console.error(err); }
   var cfg = config_();
   var last = Number(PropertiesService.getScriptProperties().getProperty('YT_LAST_SYNC') || 0);
   var every = Math.max(1, Number(cfg.YT_SYNC_HOURS) || 3);
@@ -226,7 +246,12 @@ var AUTH_ACTIONS = {
   submitReport: function (b, user) { return submitReport_(b.report || {}, user); },
   updateReport: function (b, user) { return updateReport_(b.report || {}, user); },
   deleteReport: function (b, user) { return deleteReport_(b.id, user); },
-  changePin: function (b, user) { return changePin_(user, b.oldPin, b.newPin); }
+  changePin: function (b, user) { return changePin_(user, b.oldPin, b.newPin); },
+  checkIn: function (b, user) { return checkIn_(user, b); },
+  checkOut: function (b, user) { return checkOut_(user, b); },
+  submitPermission: function (b, user) { return submitPermission_(user, b.permission || {}); },
+  cancelPermission: function (b, user) { return cancelPermission_(user, b.id); },
+  getAttachment: function (b, user) { return getAttachment_(user, b.id); }
 };
 
 var ADMIN_ACTIONS = {
@@ -237,7 +262,9 @@ var ADMIN_ACTIONS = {
   syncYouTube: function () { syncYouTube(); return getYouTube_(); },
   savePayrollItem: function (b) { return savePayrollItem_(b.item || {}); },
   deletePayrollItem: function (b) { return deletePayrollItem_(Number(b.row), b.name); },
-  sendReminderTest: function () { return sendPayrollReminder_(true); }
+  sendReminderTest: function () { return sendPayrollReminder_(true); },
+  reviewPermission: function (b, user) { return reviewPermission_(user, b.id, b.status, b.note); },
+  setAttendance: function (b, user) { return setAttendance_(user, b.record || {}); }
 };
 
 /* =========================== HELPERS =========================== */
@@ -854,7 +881,9 @@ function publicConfig_(cfg) {
     COMPANY_NAME: cfg.COMPANY_NAME, TIMEZONE: cfg.TIMEZONE, WORK_DAYS: cfg.WORK_DAYS,
     TARGET_PERIOD: cfg.TARGET_PERIOD, WEIGHT_OUTPUT: cfg.WEIGHT_OUTPUT, WEIGHT_DISCIPLINE: cfg.WEIGHT_DISCIPLINE,
     EMPLOYEE_SEE_ALL: cfg.EMPLOYEE_SEE_ALL, BACKDATE_DAYS: cfg.BACKDATE_DAYS, YT_SYNC_HOURS: cfg.YT_SYNC_HOURS,
-    SYNC_CURRENT_RESULT: cfg.SYNC_CURRENT_RESULT, REPORT_DAYS_LOADED: cfg.REPORT_DAYS_LOADED, YT_MAX_VIDEOS: cfg.YT_MAX_VIDEOS
+    SYNC_CURRENT_RESULT: cfg.SYNC_CURRENT_RESULT, REPORT_DAYS_LOADED: cfg.REPORT_DAYS_LOADED, YT_MAX_VIDEOS: cfg.YT_MAX_VIDEOS,
+    WORK_START: cfg.WORK_START, WORK_END: cfg.WORK_END, LATE_GRACE_MIN: cfg.LATE_GRACE_MIN, LATE_FINE: cfg.LATE_FINE,
+    ATTENDANCE_LATE_SCORE: cfg.ATTENDANCE_LATE_SCORE, WEIGHT_ATTENDANCE: cfg.WEIGHT_ATTENDANCE, ATTENDANCE_START: cfg.ATTENDANCE_START
   };
 }
 
@@ -878,6 +907,9 @@ function getData_(user) {
     employees: emps.filter(function (e) { return seeAll || e.name === user.name || e.role === 'ADMIN' || e.position !== 'STAFF'; })
       .map(function (e) { return { name: e.name, role: e.role, active: e.active, position: e.position, login: !!e.pin }; }),
     reports: reports,
+    attendance: readAttendance_(since).filter(function (r) { return seeAll || r.name === user.name; }).map(publicAttendance_),
+    permissions: readPermissions_(since).filter(function (r) { return admin || r.name === user.name || (seeAll && r.status === 'APPROVED'); })
+      .map(function (r) { return publicPermission_(r, admin || r.name === user.name); }),
     ytLastSync: Number(PropertiesService.getScriptProperties().getProperty('YT_LAST_SYNC') || 0)
   };
   if (admin) {
@@ -909,7 +941,9 @@ function writeKpiSummary_() {
   var channels = readChannels_().list;
   var reports = readReports_(KPI.addDays(KPI.monthStart(today), -1));
   var emps = readEmployees_();
-  var base = { channels: channels, reports: reports, employees: emps, today: today, config: cfg };
+  var since = KPI.addDays(KPI.monthStart(today), -1);
+  var base = { channels: channels, reports: reports, employees: emps, today: today, config: cfg,
+    attendance: readAttendance_(since), permissions: readPermissions_(KPI.addDays(since, -31)) };
   var m = KPI.compute(merge_(base, KPI.periodRange('month', today)));
   var d = KPI.compute(merge_(base, KPI.periodRange('today', today)));
   var dmap = {};
@@ -920,13 +954,16 @@ function writeKpiSummary_() {
     var t = dmap[e.name] || {};
     return [e.name, e.divisions.map(function (x) { return names[x] || x; }).join(', '), e.target, e.actual,
       e.achievement == null ? '' : e.achievement, e.discipline == null ? '' : e.discipline,
-      e.score == null ? '' : e.score, e.grade.code + ' — ' + e.grade.label, t.target || 0, t.actual || 0, now];
+      e.score == null ? '' : e.score, e.grade.code + ' — ' + e.grade.label, t.target || 0, t.actual || 0, now,
+      e.attendance == null ? '' : e.attendance];
   });
   var sh = ensureSheet_(SHEETS.KPI, HEADERS.KPI);
+  sh.getRange(1, 1, 1, HEADERS.KPI.length).setValues([HEADERS.KPI]);
   if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, HEADERS.KPI.length).clearContent();
   if (rows.length) {
     sh.getRange(2, 1, rows.length, HEADERS.KPI.length).setValues(rows);
     sh.getRange(2, 5, rows.length, 2).setNumberFormat('0%');
+    sh.getRange(2, 12, rows.length, 1).setNumberFormat('0%');
   }
 }
 
@@ -1384,4 +1421,291 @@ function applyDataUpdateV120_() {
 
   props.setProperty('DATA_UPDATE_V120', String(Date.now()));
   return out.join(' ; ');
+}
+
+
+/* =========================== ABSENSI / PRESENSI =========================== */
+
+function nowParts_() {
+  var s = Utilities.formatDate(new Date(), tz_(), 'yyyy-MM-dd HH:mm:ss');
+  return { date: s.slice(0, 10), time: s.slice(11, 19), hm: s.slice(11, 16), min: (+s.slice(11, 13)) * 60 + (+s.slice(14, 16)) };
+}
+function timeStr_(v) {
+  if (v === '' || v == null) return '';
+  if (Object.prototype.toString.call(v) === '[object Date]') return Utilities.formatDate(v, tz_(), 'HH:mm:ss');
+  var m = String(v).match(/(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?/);
+  return m ? ('0' + m[1]).slice(-2) + ':' + m[2] + ':' + (m[3] || '00') : '';
+}
+function attCfg_() { return KPI.normalizeConfig(config_()); }
+function setConfigValue_(key, value) {
+  var sh = ensureSheet_(SHEETS.CONFIG, HEADERS.CONFIG);
+  var vals = sh.getRange(2, 1, Math.max(1, sh.getLastRow() - 1), 2).getValues();
+  for (var i = 0; i < vals.length; i++) if (String(vals[i][0]).trim() === key) { sh.getRange(i + 2, 2).setValue(String(value)); _cfg = null; return; }
+  sh.getRange(sh.getLastRow() + 1, 1, 1, 2).setValues([[key, String(value)]]);
+  _cfg = null;
+}
+
+function readAttendance_(sinceDate) {
+  var sh = sheet_(SHEETS.ATTENDANCE);
+  if (!sh || sh.getLastRow() < 2) return [];
+  return sh.getRange(2, 1, sh.getLastRow() - 1, HEADERS.ATTENDANCE.length).getValues().map(function (r, i) {
+    return {
+      row: i + 2, date: dateStr_(r[0]), name: up_(r[1]), in: timeStr_(r[2]), out: timeStr_(r[3]),
+      lateMin: Number(r[4]) || 0, otMin: Number(r[5]) || 0, otFor: String(r[6] || ''), otBy: String(r[7] || ''),
+      early: String(r[8] || ''), notes: String(r[9] || ''), updatedBy: String(r[10] || '')
+    };
+  }).filter(function (r) { return r.date && r.name && (!sinceDate || r.date >= sinceDate); });
+}
+function publicAttendance_(r) {
+  return { date: r.date, name: r.name, in: r.in, out: r.out, lateMin: r.lateMin, otMin: r.otMin, otFor: r.otFor, otBy: r.otBy, early: r.early, notes: r.notes, updatedBy: r.updatedBy };
+}
+function writeAttendanceRow_(rec, existingRow) {
+  var sh = ensureSheet_(SHEETS.ATTENDANCE, HEADERS.ATTENDANCE, { textCols: [1, 3, 4] });
+  var row = [rec.date, rec.name, rec.in || '', rec.out || '', rec.lateMin || 0, rec.otMin || 0, rec.otFor || '', rec.otBy || '', rec.early || '', rec.notes || '', rec.updatedBy || ''];
+  var r = existingRow || sh.getLastRow() + 1;
+  sh.getRange(r, 1, 1, 4).setNumberFormat('@');
+  sh.getRange(r, 1, 1, row.length).setValues([row]);
+  return r;
+}
+function findAttendance_(name, date) {
+  return readAttendance_(date).filter(function (r) { return r.name === name && r.date === date; })[0] || null;
+}
+
+function checkIn_(user, b) {
+  if (!KPI.mustAttend(user)) throw new Error('Akun ini tidak memakai absensi.');
+  return withLock_(function () {
+    var now = nowParts_(), cfg = attCfg_();
+    var ex = findAttendance_(user.name, now.date);
+    var work = KPI.isWorkday(now.date, cfg);
+    var rec = ex && ex.in ? ex : {
+      date: now.date, name: user.name, in: now.time, out: '', lateMin: work ? Math.max(0, now.min - cfg.workStart) : 0,
+      notes: String((b && b.note) || '').slice(0, 300), updatedBy: user.name
+    };
+    if (!(ex && ex.in)) writeAttendanceRow_(rec, ex && ex.row);
+    var lateMin = work ? KPI.lateMinutes(rec, cfg) : 0;
+    var late = work && lateMin > cfg.lateGrace;
+    var lp = readPermissions_(KPI.addDays(now.date, -31)).filter(function (p) {
+      return p.name === user.name && p.type === 'TERLAMBAT' && p.from <= now.date && (p.to || p.from) >= now.date && p.status !== 'REJECTED';
+    })[0];
+    return {
+      already: !!(ex && ex.in), record: publicAttendance_(rec), workday: work, late: late, lateMin: lateMin,
+      fine: late && !(lp && lp.status === 'APPROVED') ? cfg.lateFine : 0,
+      latePermission: lp ? lp.status : null, serverTime: new Date().toISOString(), workStart: config_().WORK_START
+    };
+  });
+}
+
+function checkOut_(user, b) {
+  if (!KPI.mustAttend(user)) throw new Error('Akun ini tidak memakai absensi.');
+  b = b || {};
+  return withLock_(function () {
+    var now = nowParts_(), cfg = attCfg_();
+    var rec = findAttendance_(user.name, now.date);
+    if (!rec || !rec.in) throw new Error('Kamu belum presensi masuk hari ini.');
+    if (rec.out) return { already: true, record: publicAttendance_(rec) };
+    var work = KPI.isWorkday(now.date, cfg);
+    rec.out = now.time;
+    rec.otMin = 0; rec.otFor = ''; rec.otBy = ''; rec.early = '';
+    var ot = b.overtime;
+    if (ot && String(ot.reason || '').trim()) {
+      var base = work ? Math.max(cfg.workEnd, KPI.toMin(rec.in) || 0) : (KPI.toMin(rec.in) || 0);
+      var minutes = now.min - base;
+      if (minutes > 0) {
+        if (!String(ot.by || '').trim()) throw new Error('Isi lembur atas perintah siapa.');
+        rec.otMin = minutes;
+        rec.otFor = String(ot.reason).trim().slice(0, 500);
+        rec.otBy = String(ot.by).trim().slice(0, 80);
+      }
+    }
+    if (work && now.min < cfg.workEnd) rec.early = String(b.earlyNote || '').trim().slice(0, 300) || '(tanpa keterangan)';
+    rec.updatedBy = user.name;
+    writeAttendanceRow_(rec, rec.row);
+    return { record: publicAttendance_(rec), overtimeMin: rec.otMin, early: !!rec.early, serverTime: new Date().toISOString() };
+  });
+}
+
+/** Koreksi manual oleh admin (lupa presensi, salah jam, dll.). */
+function setAttendance_(admin, r) {
+  var name = up_(r.name), date = dateStr_(r.date);
+  if (!name || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Nama & tanggal wajib diisi.');
+  if (!findEmployee_(name)) throw new Error('Karyawan tidak ditemukan.');
+  return withLock_(function () {
+    var cfg = attCfg_();
+    var ex = findAttendance_(name, date);
+    if (r.remove) {
+      if (ex) sheet_(SHEETS.ATTENDANCE).deleteRow(ex.row);
+      return { ok: true, removed: true };
+    }
+    var tin = timeStr_(r.in), tout = timeStr_(r.out);
+    if (!tin) throw new Error('Jam masuk wajib diisi (HH:MM).');
+    var rec = {
+      date: date, name: name, in: tin, out: tout, notes: String(r.notes || 'Dikoreksi oleh ' + admin.name).slice(0, 300), updatedBy: admin.name,
+      otFor: String(r.otFor || '').trim(), otBy: String(r.otBy || '').trim(), early: ''
+    };
+    var work = KPI.isWorkday(date, cfg);
+    rec.lateMin = work ? Math.max(0, KPI.toMin(tin) - cfg.workStart) : 0;
+    rec.otMin = 0;
+    if (tout && rec.otFor) rec.otMin = Math.max(0, KPI.toMin(tout) - (work ? Math.max(cfg.workEnd, KPI.toMin(tin)) : KPI.toMin(tin)));
+    if (!rec.otMin) { rec.otFor = ''; rec.otBy = ''; }
+    if (tout && work && KPI.toMin(tout) < cfg.workEnd) rec.early = String(r.early || '(dikoreksi admin)');
+    writeAttendanceRow_(rec, ex && ex.row);
+    return { ok: true, record: publicAttendance_(rec) };
+  });
+}
+
+/* ---------- Izin ---------- */
+
+function readPermissions_(sinceDate) {
+  var sh = sheet_(SHEETS.PERMISSIONS);
+  if (!sh || sh.getLastRow() < 2) return [];
+  return sh.getRange(2, 1, sh.getLastRow() - 1, HEADERS.PERMISSIONS.length).getValues().map(function (r, i) {
+    var from = dateStr_(r[4]), to = dateStr_(r[5]) || from;
+    return {
+      row: i + 2, id: String(r[0]), created: r[1] ? new Date(r[1]).toISOString() : '', name: up_(r[2]), type: up_(r[3]),
+      from: from, to: to, time: timeStr_(r[6]).slice(0, 5), reason: String(r[7] || ''), attachment: String(r[8] || ''),
+      status: /^(APPROVED|REJECTED)$/.test(up_(r[9])) ? up_(r[9]) : 'PENDING', reviewedBy: String(r[10] || ''),
+      reviewNote: String(r[11] || ''), reviewedAt: r[12] ? new Date(r[12]).toISOString() : ''
+    };
+  }).filter(function (r) { return r.id && r.name && r.from && (!sinceDate || r.to >= sinceDate); });
+}
+function publicPermission_(r, full) {
+  var o = { id: r.id, name: r.name, type: r.type, from: r.from, to: r.to, status: r.status };
+  if (full) {
+    o.created = r.created; o.time = r.time; o.reason = r.reason; o.hasAttachment = !!r.attachment;
+    o.reviewedBy = r.reviewedBy; o.reviewNote = r.reviewNote; o.reviewedAt = r.reviewedAt;
+  }
+  return o;
+}
+
+function attachmentFolder_() {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty('ATTACHMENT_FOLDER_ID');
+  if (id) { try { return DriveApp.getFolderById(id); } catch (e) { } }
+  var f = DriveApp.createFolder('KPI Tracker — Lampiran Izin (privat)');
+  props.setProperty('ATTACHMENT_FOLDER_ID', f.getId());
+  return f;
+}
+
+function submitPermission_(user, p) {
+  var admin = user.role === 'ADMIN';
+  var name = admin && p.name ? up_(p.name) : user.name;
+  var who = findEmployee_(name);
+  if (!who) throw new Error('Karyawan tidak ditemukan.');
+  var type = up_(p.type);
+  if (PERMISSION_TYPES.indexOf(type) < 0) throw new Error('Jenis izin tidak dikenal.');
+  var from = dateStr_(p.from), to = dateStr_(p.to) || from;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) throw new Error('Tanggal tidak valid.');
+  if (to < from) throw new Error('Tanggal selesai tidak boleh sebelum tanggal mulai.');
+  if (type === 'TERLAMBAT' || type === 'PULANG_AWAL') to = from;
+  if (to > KPI.addDays(from, 30)) throw new Error('Maksimal 31 hari per pengajuan.');
+  var today = today_();
+  if (!admin && from < KPI.addDays(today, -14)) throw new Error('Izin hanya bisa diajukan maksimal 14 hari ke belakang. Hubungi manager.');
+  var reason = String(p.reason || '').trim();
+  if (reason.length < 3) throw new Error('Tuliskan alasan/keterangan izin.');
+  var time = timeStr_(p.time).slice(0, 5);
+  var fileId = '';
+  if (p.attachment && p.attachment.data) {
+    var mime = String(p.attachment.mime || 'image/jpeg');
+    if (!/^image\//.test(mime)) throw new Error('Lampiran harus berupa gambar (foto surat dokter).');
+    var bytes = Utilities.base64Decode(String(p.attachment.data));
+    if (bytes.length > 6 * 1024 * 1024) throw new Error('Ukuran gambar maksimal 6 MB.');
+    var ext = (mime.split('/')[1] || 'jpg').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '');
+    var file = attachmentFolder_().createFile(Utilities.newBlob(bytes, mime, from + '_' + name + '_' + type + '.' + ext));
+    fileId = file.getId();
+  }
+  return withLock_(function () {
+    var sh = ensureSheet_(SHEETS.PERMISSIONS, HEADERS.PERMISSIONS, { textCols: [5, 6, 7] });
+    var id = 'P' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
+    var auto = admin && name !== user.name;
+    var row = [id, new Date(), name, type, from, to, time, reason.slice(0, 1000), fileId, auto ? 'APPROVED' : 'PENDING',
+      auto ? user.name : '', auto ? 'Diinput oleh admin' : '', auto ? new Date() : ''];
+    var r = sh.getLastRow() + 1;
+    sh.getRange(r, 5, 1, 3).setNumberFormat('@');
+    sh.getRange(r, 1, 1, row.length).setValues([row]);
+    var saved = readPermissions_().filter(function (x) { return x.id === id; })[0];
+    return { permission: publicPermission_(saved, true) };
+  });
+}
+
+function cancelPermission_(user, id) {
+  return withLock_(function () {
+    var p = readPermissions_().filter(function (x) { return x.id === id; })[0];
+    if (!p) throw new Error('Pengajuan tidak ditemukan.');
+    if (p.name !== user.name && user.role !== 'ADMIN') throw new Error('Hanya bisa membatalkan pengajuan milikmu.');
+    if (p.status !== 'PENDING' && user.role !== 'ADMIN') throw new Error('Pengajuan yang sudah diproses tidak bisa dibatalkan. Hubungi manager.');
+    if (p.attachment) { try { DriveApp.getFileById(p.attachment).setTrashed(true); } catch (e) { } }
+    sheet_(SHEETS.PERMISSIONS).deleteRow(p.row);
+    return { ok: true };
+  });
+}
+
+function reviewPermission_(admin, id, status, note) {
+  status = up_(status);
+  if (status !== 'APPROVED' && status !== 'REJECTED') throw new Error('Status tidak valid.');
+  return withLock_(function () {
+    var p = readPermissions_().filter(function (x) { return x.id === id; })[0];
+    if (!p) throw new Error('Pengajuan tidak ditemukan.');
+    if (p.name === admin.name) throw new Error('Izin milikmu sendiri harus disetujui manager lain.');
+    sheet_(SHEETS.PERMISSIONS).getRange(p.row, 10, 1, 4).setValues([[status, admin.name, String(note || '').slice(0, 300), new Date()]]);
+    var saved = readPermissions_().filter(function (x) { return x.id === id; })[0];
+    return { permission: publicPermission_(saved, true) };
+  });
+}
+
+function getAttachment_(user, id) {
+  var p = readPermissions_().filter(function (x) { return x.id === id; })[0];
+  if (!p || !p.attachment) throw new Error('Lampiran tidak ditemukan.');
+  if (user.role !== 'ADMIN' && p.name !== user.name) throw new Error('Tidak punya akses ke lampiran ini.');
+  var blob = DriveApp.getFileById(p.attachment).getBlob();
+  return { mime: blob.getContentType(), name: blob.getName(), data: Utilities.base64Encode(blob.getBytes()) };
+}
+
+/* ---------- Rekap bulanan ke sheet ---------- */
+
+function writeAttendanceRecap_() {
+  var cfg = config_();
+  var today = today_();
+  var thisM = KPI.monthStart(today), prevEnd = KPI.addDays(thisM, -1), prevM = KPI.monthStart(prevEnd);
+  var emps = readEmployees_();
+  var att = readAttendance_(prevM), perms = readPermissions_(KPI.addDays(prevM, -31));
+  var pos = {};
+  emps.forEach(function (e) { pos[e.name] = e.position; });
+  var posName = { BOSS: 'Bos', MANAGER: 'Manager', STAFF: 'Staff' };
+  var now = new Date();
+  var rows = [];
+  [[thisM, today], [prevM, prevEnd]].forEach(function (rg) {
+    var rec = KPI.attendanceRecap({ attendance: att, permissions: perms, employees: emps, from: rg[0], to: rg[1], today: today, config: cfg });
+    rec.list.forEach(function (r) {
+      rows.push([rg[0].slice(0, 7), r.name, posName[pos[r.name]] || 'Staff', r.workdays, r.present, r.onTime, r.late, r.excusedLate, r.lateMin,
+        r.izin, r.sakit, r.cuti, r.alpa, Math.round(r.overtimeMin / 6) / 10, r.early, r.fines, r.rate == null ? '' : r.rate, now]);
+    });
+  });
+  replaceSheet_(SHEETS.ATT_RECAP, HEADERS.ATT_RECAP, rows);
+  var sh = sheet_(SHEETS.ATT_RECAP);
+  if (rows.length) {
+    sh.getRange(2, 16, rows.length, 1).setNumberFormat('"Rp"#,##0');
+    sh.getRange(2, 17, rows.length, 1).setNumberFormat('0%');
+  }
+}
+
+/* =========================== UPDATE DATA 1.3.0 =========================== */
+
+function applyDataUpdateV130_() {
+  var props = PropertiesService.getScriptProperties();
+  var out = [];
+  ensureConfigDefaults_();
+  _cfg = null;
+  var cfg = config_();
+  if (!cfg.ATTENDANCE_START) { var startD = KPI.addDays(today_(), 1); setConfigValue_('ATTENDANCE_START', startD); out.push('absensi mulai dihitung ' + startD + ' (hari ini = uji coba)'); }
+  if (!props.getProperty('DATA_UPDATE_V130')) {
+    if (String(cfg.WEIGHT_OUTPUT) === '80' && String(cfg.WEIGHT_DISCIPLINE) === '20') {
+      setConfigValue_('WEIGHT_OUTPUT', '70');
+      setConfigValue_('WEIGHT_DISCIPLINE', '10');
+      out.push('bobot KPI: output 70 / laporan 10 / kehadiran ' + (config_().WEIGHT_ATTENDANCE || 20));
+    }
+    props.setProperty('DATA_UPDATE_V130', String(Date.now()));
+  }
+  try { attachmentFolder_(); out.push('folder lampiran Drive siap'); } catch (err) { out.push('folder Drive GAGAL: ' + err.message); }
+  try { writeAttendanceRecap_(); } catch (err) { }
+  return out.join(' ; ') || 'sudah diterapkan sebelumnya';
 }

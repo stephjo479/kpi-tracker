@@ -4,7 +4,7 @@
  * spreadsheet terhubung. Login demo: OWNER / 1234 (admin), RINA / 1111 (karyawan).
  */
 var Demo = (function () {
-  var KEY = 'demoDB_v3';
+  var KEY = 'demoDB_v4';
   var NAMES = { DEV: 'DEV CHANNEL', STAFF: 'STAFF CHANNEL', CLIENT: 'CLIENT CHANNEL' };
 
   function pad(n) { return (n < 10 ? '0' : '') + n; }
@@ -61,12 +61,14 @@ var Demo = (function () {
       });
     }
     return {
-      employees: employees, channels: channels, reports: reports,
+      employees: employees, channels: channels, reports: reports, attendance: demoAttendance(employees, r, t), permissions: demoPermissions(t),
       config: {
         COMPANY_NAME: 'Studio Demo', TIMEZONE: 'Asia/Jakarta', WORK_DAYS: '1,2,3,4,5', TARGET_PERIOD: 'DAILY',
         WEIGHT_OUTPUT: '80', WEIGHT_DISCIPLINE: '20', SYNC_CURRENT_RESULT: 'TRUE', EMPLOYEE_SEE_ALL: 'TRUE',
         BACKDATE_DAYS: '3', REPORT_DAYS_LOADED: '120', YT_SYNC_HOURS: '3', YT_MAX_VIDEOS: '50',
-        REMINDER_DAYS_BEFORE: '5', REMINDER_EMAILS: '', REMINDER_HOUR: '8'
+        REMINDER_DAYS_BEFORE: '5', REMINDER_EMAILS: '', REMINDER_HOUR: '8',
+        WORK_START: '09:00', WORK_END: '17:00', LATE_GRACE_MIN: '0', LATE_FINE: '10000', ATTENDANCE_LATE_SCORE: '50', WEIGHT_ATTENDANCE: '20',
+        ATTENDANCE_START: KPI.addDays(t, -30)
       },
       lastSync: Date.now() - 42 * 60 * 1000,
       payroll: [
@@ -76,6 +78,34 @@ var Demo = (function () {
     };
   }
 
+  function hhmm(min) { return String(Math.floor(min / 60)).padStart(2, '0') + ':' + String(min % 60).padStart(2, '0') + ':00'; }
+  function demoAttendance(emps, r, t) {
+    var out = [], habit = { OWNER: 520, RINA: 530, BAYU: 548, SARI: 528, DIMAS: 552, LUTFI: 525, MAYA: 535 };
+    for (var k = 30; k >= 1; k--) {
+      var d = KPI.addDays(t, -k);
+      if (KPI.dow(d) > 5) continue;
+      emps.forEach(function (e) {
+        if (!e.pin || e.position === 'BOSS') return;
+        if (r() < 0.05) return; // bolos sesekali
+        var inMin = (habit[e.name] || 530) + Math.round((r() - 0.5) * 30);
+        var outMin = 1020 + Math.round(r() * 40) - 10;
+        var ot = r() < 0.12 ? 60 + Math.round(r() * 120) : 0;
+        out.push({ date: d, name: e.name, in: hhmm(inMin), out: hhmm(outMin + ot), lateMin: Math.max(0, inMin - 540), otMin: ot,
+          otFor: ot ? 'Kejar target upload' : '', otBy: ot ? 'OWNER' : '', early: outMin < 1020 ? 'Urusan keluarga' : '', notes: '', updatedBy: e.name });
+      });
+    }
+    return out;
+  }
+  function demoPermissions(t) {
+    return [
+      { id: 'DP1', created: new Date().toISOString(), name: 'SARI', type: 'SAKIT', from: KPI.addDays(t, -6), to: KPI.addDays(t, -5), time: '', reason: 'Demam, sudah ke dokter', hasAttachment: false, status: 'APPROVED', reviewedBy: 'OWNER', reviewNote: 'Cepat sembuh', reviewedAt: new Date().toISOString() },
+      { id: 'DP2', created: new Date().toISOString(), name: 'BAYU', type: 'TERLAMBAT', from: t, to: t, time: '10:00', reason: 'Ban motor bocor', hasAttachment: false, status: 'PENDING', reviewedBy: '', reviewNote: '', reviewedAt: '' }
+    ];
+  }
+  function nowJkt() {
+    var s2 = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date());
+    return { date: s2.slice(0, 10), time: s2.slice(11, 19), min: (+s2.slice(11, 13)) * 60 + (+s2.slice(14, 16)) };
+  }
   var db = null;
   function load() {
     if (db) return db;
@@ -181,6 +211,11 @@ var Demo = (function () {
       config: d.config, channels: d.channels.map(function (c) { return strip(c, admin); }),
       employees: d.employees.filter(function (e) { return seeAll || e.name === u.name || e.role === 'ADMIN' || e.position; }).map(function (e) { return { name: e.name, role: e.role, active: e.active, position: e.position || 'STAFF', login: !!e.pin }; }),
       reports: d.reports.filter(function (r) { return seeAll || r.employee === u.name; }),
+      attendance: (d.attendance || []).filter(function (a) { return seeAll || a.name === u.name; }),
+      permissions: (d.permissions || []).filter(function (p) { return admin || p.name === u.name || (seeAll && p.status === 'APPROVED'); }).map(function (p) {
+        if (admin || p.name === u.name) { var c = Object.assign({}, p); delete c._att; return c; }
+        return { id: p.id, name: p.name, type: p.type, from: p.from, to: p.to, status: p.status };
+      }),
       ytLastSync: d.lastSync
     };
     if (admin) out.admin = { employees: d.employees.map(function (e) { return Object.assign({}, e, { position: e.position || 'STAFF', login: !!e.pin }); }), spreadsheetUrl: '', configRaw: d.config, payroll: payrollItems(), reminderTo: ['owner@contoh.com'] };
@@ -238,6 +273,45 @@ var Demo = (function () {
       canEdit(d.reports[i], u);
       d.reports.splice(i, 1); save(); return { ok: true };
     },
+    checkIn: function (b, u) {
+      if (u.position === 'BOSS') throw new Error('Akun ini tidak memakai absensi.');
+      var d = load(), n = nowJkt(), list = d.attendance = d.attendance || [];
+      var ex = list.filter(function (a) { return a.name === u.name && a.date === n.date; })[0];
+      var work = KPI.dow(n.date) <= 5;
+      if (!ex) { ex = { date: n.date, name: u.name, in: n.time, out: '', lateMin: work ? Math.max(0, n.min - 540) : 0, otMin: 0, otFor: '', otBy: '', early: '', notes: '', updatedBy: u.name }; list.push(ex); save(); }
+      var lm = work ? Math.max(0, KPI.toMin(ex.in) - 540) : 0;
+      var lp = (d.permissions || []).filter(function (p) { return p.name === u.name && p.type === 'TERLAMBAT' && p.from === n.date && p.status !== 'REJECTED'; })[0];
+      return { already: false, record: ex, workday: work, late: lm > 0, lateMin: lm, fine: lm > 0 && !(lp && lp.status === 'APPROVED') ? 10000 : 0, latePermission: lp ? lp.status : null, serverTime: new Date().toISOString() };
+    },
+    checkOut: function (b, u) {
+      var d = load(), n = nowJkt();
+      var ex = (d.attendance || []).filter(function (a) { return a.name === u.name && a.date === n.date; })[0];
+      if (!ex) throw new Error('Kamu belum presensi masuk hari ini.');
+      if (ex.out) return { already: true, record: ex };
+      ex.out = n.time;
+      if (b.overtime && b.overtime.reason) { ex.otMin = Math.max(0, n.min - Math.max(1020, KPI.toMin(ex.in))); ex.otFor = b.overtime.reason; ex.otBy = b.overtime.by; }
+      if (KPI.dow(n.date) <= 5 && n.min < 1020) ex.early = b.earlyNote || '(tanpa keterangan)';
+      save(); return { record: ex, overtimeMin: ex.otMin, early: !!ex.early };
+    },
+    submitPermission: function (b, u) {
+      var d = load(), p = b.permission || {};
+      if (String(p.reason || '').trim().length < 3) throw new Error('Tuliskan alasan/keterangan izin.');
+      var name = u.role === 'ADMIN' && p.name ? p.name : u.name, auto = name !== u.name;
+      var rec = { id: 'DP' + Date.now().toString(36), created: new Date().toISOString(), name: name, type: p.type, from: p.from, to: p.to || p.from, time: p.time || '', reason: p.reason,
+        hasAttachment: !!(p.attachment && p.attachment.data), _att: p.attachment || null, status: auto ? 'APPROVED' : 'PENDING', reviewedBy: auto ? u.name : '', reviewNote: auto ? 'Diinput oleh admin' : '', reviewedAt: auto ? new Date().toISOString() : '' };
+      (d.permissions = d.permissions || []).push(rec);
+      try { save(); } catch (e) { }
+      var pub = Object.assign({}, rec); delete pub._att;
+      return { permission: pub };
+    },
+    cancelPermission: function (b, u) {
+      var d = load(); d.permissions = (d.permissions || []).filter(function (x) { return !(x.id === b.id && (x.name === u.name || u.role === 'ADMIN')); }); save(); return { ok: true };
+    },
+    getAttachment: function (b) {
+      var p = (load().permissions || []).filter(function (x) { return x.id === b.id; })[0];
+      if (!p || !p._att) throw new Error('Lampiran tidak ditemukan (demo).');
+      return { mime: p._att.mime, name: 'surat.jpg', data: p._att.data };
+    },
     changePin: function (b, u) {
       if (String(b.oldPin) !== u.pin) throw new Error('PIN lama salah.');
       if (!/^\d{4,8}$/.test(String(b.newPin))) throw new Error('PIN baru harus 4–8 digit angka.');
@@ -289,6 +363,21 @@ var Demo = (function () {
       var i = Number(it.row) - 2;
       if (i >= 0 && d.payroll[i]) d.payroll[i] = row; else d.payroll.push(row);
       save(); return { payroll: payrollItems() };
+    },
+    reviewPermission: function (b, u) {
+      var p = (load().permissions || []).filter(function (x) { return x.id === b.id; })[0];
+      if (!p) throw new Error('Pengajuan tidak ditemukan.');
+      if (p.name === u.name) throw new Error('Izin milikmu sendiri harus disetujui manager lain.');
+      p.status = b.status; p.reviewedBy = u.name; p.reviewNote = b.note || ''; p.reviewedAt = new Date().toISOString();
+      save(); return { permission: p };
+    },
+    setAttendance: function (b, u) {
+      var d = load(), r = b.record || {}, list = d.attendance = d.attendance || [];
+      var i = list.findIndex(function (a) { return a.name === r.name && a.date === r.date; });
+      if (r.remove) { if (i >= 0) list.splice(i, 1); save(); return { ok: true }; }
+      var rec = { date: r.date, name: r.name, in: (r.in || '') + ':00', out: r.out ? r.out + ':00' : '', lateMin: Math.max(0, KPI.toMin(r.in) - 540), otMin: r.otFor && r.out ? Math.max(0, KPI.toMin(r.out) - 1020) : 0, otFor: r.otFor || '', otBy: r.otBy || '', early: '', notes: r.notes || 'Dikoreksi oleh ' + u.name, updatedBy: u.name };
+      if (i >= 0) list[i] = rec; else list.push(rec);
+      save(); return { ok: true, record: rec };
     },
     deletePayrollItem: function (b) { var d = load(); d.payroll.splice(Number(b.row) - 2, 1); save(); return { payroll: payrollItems() }; },
     sendReminderTest: function () { return { to: ['owner@contoh.com'], date: '', total: 0, items: 0 }; }

@@ -203,7 +203,7 @@
   }
   function kpiRange(from, to) {
     var d = D();
-    return KPI.compute({ channels: d.channels, reports: d.reports, employees: d.employees, from: from, to: to, today: today(), config: d.config });
+    return KPI.compute({ channels: d.channels, reports: d.reports, employees: d.employees, attendance: d.attendance, permissions: d.permissions, from: from, to: to, today: today(), config: d.config });
   }
   function kpiPeriod(kind) { var r = KPI.periodRange(kind, today()); return kpiRange(r.from, r.to); }
   function channelActual(key, from, to) {
@@ -237,7 +237,8 @@
   }
   function canRerender() {
     if ($('#modal-host').innerHTML) return false;
-    if (S.dirty && route().name === 'report') return false;
+    if (S.dirty && (route().name === 'report' || route().name === 'attendance')) return false;
+    if (document.querySelector('.comic-backdrop')) return false;
     var a = document.activeElement;
     if (a && /INPUT|TEXTAREA|SELECT/.test(a.tagName)) return false;
     return true;
@@ -247,6 +248,7 @@
     if (!silent) S.loading = true;
     return API.call('getData').then(function (d) {
       S.data = d; S.user = d.user; S.loading = false;
+      syncClock(d.serverTime);
       Store.setJSON('user', d.user); Store.setJSON('cache_data', d);
       try { maybeNotifyPayroll(); } catch (e) { }
       if (!silent || canRerender()) render();
@@ -358,6 +360,7 @@
 
   var NAV = [
     { id: 'home', label: 'Beranda', icon: 'home' },
+    { id: 'attendance', label: 'Absensi', icon: 'clock' },
     { id: 'report', label: 'Laporan', icon: 'report' },
     { id: 'kpi', label: 'KPI', icon: 'kpi' },
     { id: 'channels', label: 'Channel', icon: 'yt' },
@@ -383,6 +386,7 @@
     else if (r.name === 'channel') page = channelDetailView(r.arg);
     else if (r.name === 'admin') page = adminView();
     else if (r.name === 'team') page = teamView();
+    else if (r.name === 'attendance') page = attendanceView();
     else if (r.name === 'settings') page = settingsView();
     else page = homeView();
     var active = r.name === 'channel' ? 'channels' : r.name;
@@ -400,18 +404,19 @@
     var company = cfg().COMPANY_NAME || (S.publicInfo && S.publicInfo.company) || 'KPI Tracker';
     var navItems = NAV.filter(function (n) { return !n.admin || isAdmin(); });
     var side = '<aside class="sidebar"><div class="brand"><div class="brand-logo">' + icon('logo') + '</div><div class="col"><div class="brand-name">' + esc(company) + '</div><div class="brand-sub">KPI & Channel Tracker</div></div></div>' +
-      navItems.map(function (n) { return '<a class="nav-item ' + (active === n.id ? 'active' : '') + '" href="#/' + n.id + '">' + icon(n.icon) + n.label + (n.id === 'admin' && activeReminder() ? '<span class="nav-dot" title="Pengingat gajian"></span>' : '') + '</a>'; }).join('') +
+      navItems.map(function (n) { return '<a class="nav-item ' + (active === n.id ? 'active' : '') + '" href="#/' + n.id + '">' + icon(n.icon) + n.label + (n.id === 'admin' && activeReminder() ? '<span class="nav-dot" title="Pengingat gajian"></span>' : '') + (n.id === 'attendance' && isAdmin() && attEnabled() && pendingPerms().length ? '<span class="nav-dot" title="Izin menunggu persetujuan"></span>' : '') + '</a>'; }).join('') +
       '<div class="nav-spacer"></div>' +
       (isStandalone() ? '' : '<div class="mb">' + installButton('block sm', 'Pasang di PC') + '</div>') +
       (API.isDemo() ? '<div class="notice warn xs mb">Mode demo — data fiktif</div>' : '') +
       '<div class="user-card">' + personAvatar(u.name) + '<div class="col grow"><div class="bold ellipsis">' + esc(cap(u.name)) + '</div><div class="xs muted">' + esc(roleLabel(u)) + '</div></div>' +
       '<button class="btn ghost icon sm" data-act="cycle-theme" title="Ganti tema">' + icon(effectiveDark() ? 'moon' : 'sun') + '</button></div></aside>';
-    var bottomIds = isAdmin() ? ['home', 'report', 'kpi', 'channels', 'admin'] : ['home', 'report', 'kpi', 'channels', 'settings'];
+    var bottomIds = isAdmin() ? ['home', 'attendance', 'report', 'kpi', 'admin'] : ['home', 'attendance', 'report', 'kpi', 'settings'];
     var bottom = '<nav class="bottom-nav">' + bottomIds.map(function (id) {
       var n = NAV.filter(function (x) { return x.id === id; })[0];
-      return '<a class="nav-item ' + (active === id ? 'active' : '') + '" href="#/' + id + '">' + icon(n.icon) + (id === 'settings' ? 'Akun' : n.label) + (id === 'admin' && activeReminder() ? '<span class="nav-dot"></span>' : '') + '</a>';
+      return '<a class="nav-item ' + (active === id ? 'active' : '') + '" href="#/' + id + '">' + icon(n.icon) + (id === 'settings' ? 'Akun' : n.label) + (id === 'admin' && activeReminder() ? '<span class="nav-dot"></span>' : '') + (id === 'attendance' && isAdmin() && attEnabled() && pendingPerms().length ? '<span class="nav-dot"></span>' : '') + '</a>';
     }).join('') + '</nav>';
     var top = '<header class="topbar"><div class="brand-logo" style="width:32px;height:32px;border-radius:10px">' + icon('logo') + '</div><div class="grow bold ellipsis">' + esc(company) + '</div>' +
+      '<a class="btn ghost icon sm" href="#/channels" aria-label="Channel YouTube" title="Channel YouTube">' + icon('yt') + '</a>' +
       '<a class="btn ghost icon sm' + (active === 'team' ? ' active' : '') + '" href="#/team" aria-label="Struktur tim" title="Struktur tim">' + icon('users') + '</a>' +
       '<button class="btn ghost icon sm" data-act="cycle-theme" aria-label="Ganti tema">' + icon(effectiveDark() ? 'moon' : 'sun') + '</button>' +
       '<a href="#/settings" aria-label="Akun">' + personAvatar(u.name, 'sm') + '</a></header>';
@@ -568,7 +573,7 @@
     var tv = topVideos(mine, 5);
     var myReports = D().reports.filter(function (r) { return r.employee === u.name; }).sort(sortReports).slice(0, 5);
 
-    return hero + tiles +
+    return presenceCard() + hero + tiles +
       '<div class="grid grid-main mt"><div class="card"><div class="card-head"><h2>Channel saya hari ini</h2><a class="small" href="#/channels">Lihat semua</a></div><div class="list">' + chList + '</div></div>' +
       '<div class="card"><div class="card-head"><h2>Video naik (24 jam)</h2></div><div class="list">' + (tv.length ? tv.map(function (x) { return videoRow(x, true); }).join('') : emptyYT()) + '</div></div></div>' +
       '<div class="card mt"><div class="card-head"><h2>Laporan terakhir</h2><a class="small" href="#/report">Buka laporan</a></div>' + reportList(myReports, false) + '</div>' +
@@ -636,7 +641,7 @@
     }).join('') || '<div class="empty">Belum ada data gaji.</div>';
 
     var tv = topVideos(d.channels, 6);
-    return reminderBanner() + hero + tiles +
+    return reminderBanner() + presenceCard() + hero + tiles + attTodayCard() +
       '<div class="grid grid-main mt"><div class="card"><div class="card-head"><h2>Belum lapor hari ini</h2><span class="sub">' + notYet.length + ' orang</span></div>' + notYetHtml +
       '<div class="divider"></div><div class="card-head" style="margin-bottom:4px"><h2>KPI per divisi</h2><span class="sub">bulan ini</span></div><div class="list">' + divs + '</div></div>' +
       '<div class="card"><div class="card-head"><h2>Top performer</h2><a class="small" href="#/kpi">Lihat KPI</a></div><div class="list">' + top + '</div></div></div>' +
@@ -889,7 +894,7 @@
   function kpiView() {
     var res = kpiCurrent();
     var k = S.kpi;
-    var list = res.list.filter(function (e) { return k.division === 'ALL' || e.divisions.indexOf(k.division) >= 0; });
+    var list = res.list.filter(function (e) { return (k.division === 'ALL' || e.divisions.indexOf(k.division) >= 0) && (seeAll() || e.name === S.user.name); });
     var scored = list.filter(function (e) { return e.score != null; });
     var tT = 0, tA = 0;
     list.forEach(function (e) { tT += e.target; tA += e.actual; });
@@ -909,9 +914,12 @@
       '<div class="card stat"><div class="label">Rata-rata skor KPI</div><div class="value num">' + (avg == null ? '—' : avg) + '</div><div class="delta">' + (avg == null ? '&nbsp;' : statusBadge(KPI.grade(avg))) + '</div></div>' +
       '<div class="card stat"><div class="label">Capaian output</div><div class="value num">' + fmtPct(tT ? tA / tT : null) + '</div><div class="delta muted num">' + fmtN(tA) + ' dari ' + fmtN(tT) + '</div></div>' +
       '<div class="card stat"><div class="label">Disiplin laporan</div><div class="value num">' + fmtPct(disc) + '</div><div class="delta muted">rata-rata hari terisi</div></div>' +
-      '<div class="card stat"><div class="label">Hari kerja dihitung</div><div class="value num">' + res.summary.workdays + '</div><div class="delta muted">' + esc(fmtDate(res.from)) + ' – ' + esc(fmtDate(res.effTo < res.from ? res.from : res.effTo)) + '</div></div></div>';
+      (res.config.weightAttendance > 0 && attEnabled()
+        ? '<div class="card stat"><div class="label">Kehadiran rata-rata</div><div class="value num">' + fmtPct((function () { var a = list.filter(function (e) { return e.attendance != null; }); return a.length ? a.reduce(function (s, e) { return s + e.attendance; }, 0) / a.length : null; })()) + '</div><div class="delta muted">' + res.summary.workdays + ' hari kerja · ' + esc(fmtDate(res.from)) + ' – ' + esc(fmtDate(res.effTo < res.from ? res.from : res.effTo)) + '</div></div></div>'
+        : '<div class="card stat"><div class="label">Hari kerja dihitung</div><div class="value num">' + res.summary.workdays + '</div><div class="delta muted">' + esc(fmtDate(res.from)) + ' – ' + esc(fmtDate(res.effTo < res.from ? res.from : res.effTo)) + '</div></div></div>');
 
     var me = S.user.name;
+    var showAtt = res.config.weightAttendance > 0 && attEnabled();
     var rows = list.map(function (e, i) {
       return '<tr class="clickable" data-act="kpi-detail" data-name="' + esc(e.name) + '"' + (e.name === me ? ' style="background:var(--accent-soft)"' : '') + '>' +
         '<td class="muted bold num">' + (e.score == null ? '–' : i + 1) + '</td>' +
@@ -919,10 +927,11 @@
         '<td class="num">' + fmtN(e.target) + '</td><td class="num bold">' + fmtN(e.actual) + '</td>' +
         '<td style="min-width:150px"><div class="row" style="gap:8px"><div class="grow">' + bar(e.achievement) + '</div><span class="num small bold" style="width:44px;text-align:right">' + fmtPct(e.achievement) + '</span></div></td>' +
         '<td class="num">' + fmtPct(e.discipline) + '<div class="xs muted">' + e.reportedDays + '/' + e.workdays + ' hari</div></td>' +
+        (showAtt ? '<td class="num">' + fmtPct(e.attendance) + '<div class="xs muted">' + (e.att ? (e.att.late ? e.att.late + '× telat' : '') + (e.att.late && e.att.alpa ? ' · ' : '') + (e.att.alpa ? e.att.alpa + '× alpa' : '') || 'aman' : '') + '</div></td>' : '') +
         '<td class="num"><span class="bold" style="font-size:18px">' + (e.score == null ? '—' : e.score) + '</span></td>' +
         '<td>' + statusBadge(e.grade) + '</td></tr>';
     }).join('');
-    var table = list.length ? '<div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Karyawan</th><th class="num">Target</th><th class="num">Aktual</th><th>Capaian</th><th class="num">Disiplin</th><th class="num">Skor</th><th>Status</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+    var table = list.length ? '<div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Karyawan</th><th class="num">Target</th><th class="num">Aktual</th><th>Capaian</th><th class="num">Disiplin</th>' + (showAtt ? '<th class="num">Kehadiran</th>' : '') + '<th class="num">Skor</th><th>Status</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
       : '<div class="empty">' + icon('kpi') + '<div>Tidak ada data KPI untuk filter ini.</div></div>';
 
     var c = res.config;
@@ -930,7 +939,10 @@
       '<b>Target periode</b> = target per channel (kolom TARGET, dianggap <b>' + (c.targetPeriod === 'WEEKLY' ? 'per minggu' : c.targetPeriod === 'MONTHLY' ? 'per bulan' : 'per hari') + '</b>) × hari kerja yang sudah berjalan.<br>' +
       '<b>Capaian output</b> = total jumlah di laporan ÷ target periode.<br>' +
       '<b>Disiplin laporan</b> = hari kerja yang ada laporannya ÷ hari kerja yang sudah berjalan.<br>' +
-      '<b>Skor KPI</b> = capaian (maks. 100%) × ' + c.weightOutput + '% + disiplin × ' + c.weightDiscipline + '%.<br>' +
+      (showAtt ? '<b>Kehadiran</b> = tepat waktu 100% · terlambat ' + Math.round(c.lateScore * 100) + '% · tanpa keterangan 0%. Izin terlambat yang disetujui = tepat waktu.<br>' +
+        '<b>Izin/sakit/cuti yang disetujui</b> tidak dihitung: target output & laporan hari itu dihapus, jadi tidak merugikan.<br>' +
+        '<b>Skor KPI</b> = capaian (maks. 100%) × ' + c.weightOutput + '% + disiplin laporan × ' + c.weightDiscipline + '% + kehadiran × ' + c.weightAttendance + '%.<br>'
+        : '<b>Skor KPI</b> = capaian (maks. 100%) × ' + c.weightOutput + '% + disiplin × ' + c.weightDiscipline + '%.<br>') +
       'Hari kerja: ' + c.workDays.map(function (d) { return ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'][d - 1]; }).join(', ') + '. Status: ≥90 Sangat baik · ≥75 Baik · ≥60 Cukup · &lt;60 Perlu perhatian.<br>' +
       '<b>Manager & bos tidak masuk peringkat KPI</b>, tetapi channel yang mereka pegang tetap dipantau views-nya.' +
       (isAdmin() ? '<br><span class="muted">Ubah bobot, hari kerja & arti target di Admin → Pengaturan.</span>' : '') + '</div></details>';
@@ -954,12 +966,14 @@
         '<td class="num">' + (ch && ytOf(ch) && ytOf(ch).status === 'OK' ? fmtN(up) : '<span class="muted">—</span>') + '</td></tr>';
     }).join('');
     openModal({
-      title: esc(cap(e.name)) + ' · KPI', wide: true,
+      title: esc(cap(e.name)) + ' · KPI <span class="small muted">' + esc(fmtDate(res.from)) + ' – ' + esc(fmtDate(res.to)) + '</span>', wide: true,
       body: '<div class="grid grid-4">' +
         '<div class="stat"><div class="label">Skor</div><div class="value num">' + (e.score == null ? '—' : e.score) + '</div><div>' + statusBadge(e.grade) + '</div></div>' +
         '<div class="stat"><div class="label">Capaian</div><div class="value num">' + fmtPct(e.achievement) + '</div><div class="xs muted num">' + fmtN(e.actual) + ' / ' + fmtN(e.target) + '</div></div>' +
         '<div class="stat"><div class="label">Disiplin</div><div class="value num">' + fmtPct(e.discipline) + '</div><div class="xs muted">' + e.reportedDays + ' dari ' + e.workdays + ' hari kerja</div></div>' +
-        '<div class="stat"><div class="label">Periode</div><div class="bold">' + esc(fmtDate(res.from)) + ' – ' + esc(fmtDate(res.to)) + '</div></div></div>' +
+        (e.att ? '<div class="stat"><div class="label">Kehadiran</div><div class="value num">' + fmtPct(e.attendance) + '</div><div class="xs muted">' + e.att.onTime + ' tepat · ' + e.att.late + ' telat · ' + e.att.alpa + ' alpa · denda Rp ' + fmtN(e.att.fines) + '</div></div>'
+          : '<div class="stat"><div class="label">Periode</div><div class="bold">' + esc(fmtDate(res.from)) + ' – ' + esc(fmtDate(res.to)) + '</div></div>') + '</div>' +
+        (e.excusedDays ? '<div class="notice small mt">' + e.excusedDays + ' hari izin/sakit/cuti yang disetujui tidak dihitung dalam target periode ini.</div>' : '') +
         '<div class="card-head mt"><h3>Output harian</h3><div class="legend"><span><i style="background:var(--accent)"></i>Aktual</span><span><i class="dash"></i>Target</span></div></div><div id="kpi-chart"></div>' +
         '<h3 class="mt mb">Per channel</h3><div class="table-wrap"><table class="table"><thead><tr><th>Channel</th><th class="num">Target</th><th class="num">Aktual</th><th class="num">Capaian</th><th class="num" title="Video yang terdeteksi terbit di YouTube pada periode ini (yang memenuhi durasi minimal channel)">Upload YT</th></tr></thead><tbody>' + chRows + '</tbody></table></div>',
       mount: function () {
@@ -1082,6 +1096,436 @@
   function channelReports(c) {
     var list = D().reports.filter(function (r) { return r.channel === c.key; }).sort(sortReports).slice(0, 10);
     return '<div class="card mt"><div class="card-head"><h2>Laporan terbaru channel ini</h2></div>' + reportList(list, true) + '</div>';
+  }
+
+  /* =========================================================
+     ABSENSI / PRESENSI
+     ========================================================= */
+  var PERM = {
+    TERLAMBAT: { label: 'Izin terlambat' },
+    TIDAK_MASUK: { label: 'Izin tidak masuk' },
+    SAKIT: { label: 'Sakit' },
+    CUTI: { label: 'Cuti' },
+    PULANG_AWAL: { label: 'Izin pulang awal' }
+  };
+  var PERM_STATUS = { PENDING: ['st-warning', 'Menunggu'], APPROVED: ['st-good', 'Disetujui'], REJECTED: ['st-critical', 'Ditolak'] };
+  var EXCUSE = ['TIDAK_MASUK', 'SAKIT', 'CUTI'];
+  var LATE_QUOTES = ['Jam 9 itu jadwal, bukan saran! 😤', 'Alarm kamu juga perlu di-KPI nih ⏰', 'Kopi boleh telat, kamu jangan! ☕',
+    'Macet? Berangkat lebih pagi dong 🚗💨', 'Kasur memang nyaman, tapi target menunggu! 🛏️', 'Dompet kamu bilang: "aduh…" 💸',
+    'Ayam aja bangun lebih pagi 🐓', 'Besok coba pasang 3 alarm ya ⏰⏰⏰'];
+
+  function permBadge(st) { var s = PERM_STATUS[st] || PERM_STATUS.PENDING; return '<span class="badge ' + s[0] + '">' + icon(st === 'APPROVED' ? 'check' : st === 'REJECTED' ? 'x' : 'clock') + s[1] + '</span>'; }
+  function attCfg() { return KPI.normalizeConfig(cfg()); }
+  function attEnabled() { return !!S.data && D().attendance !== undefined && !!cfg().WORK_START; }
+  function syncClock(iso) { var t = Date.parse(iso || ''); if (t) S.clockOffset = t - Date.now(); }
+  function serverNow() { return new Date(Date.now() + (S.clockOffset || 0)); }
+  var tzTimeFmt = {};
+  function timeInTz(date) {
+    var tz = cfg().TIMEZONE || 'Asia/Jakarta';
+    try {
+      if (!tzTimeFmt[tz]) tzTimeFmt[tz] = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+      return tzTimeFmt[tz].format(date).replace(/^24/, '00');
+    } catch (e) { return date.toTimeString().slice(0, 8); }
+  }
+  function tzLabel() { var tz = cfg().TIMEZONE || 'Asia/Jakarta'; return { 'Asia/Jakarta': 'WIB', 'Asia/Pontianak': 'WIB', 'Asia/Makassar': 'WITA', 'Asia/Jayapura': 'WIT' }[tz] || ''; }
+  function nowMin() { var t = timeInTz(serverNow()); return (+t.slice(0, 2)) * 60 + (+t.slice(3, 5)); }
+  function hm(min) { min = Math.max(0, Math.round(min)); return String(Math.floor(min / 60)).padStart(2, '0') + ':' + String(min % 60).padStart(2, '0'); }
+  function durTxt(min) { min = Math.round(min || 0); var h = Math.floor(min / 60), m = min % 60; return (h ? h + ' jam' : '') + (h && m ? ' ' : '') + (m || !h ? m + ' menit' : ''); }
+  function t5(s) { return String(s || '').slice(0, 5); }
+  function iMustAttend() { return !!S.user && posOf(S.user) !== 'BOSS'; }
+  function attOf(name, date) { return (D().attendance || []).filter(function (a) { return a.name === name && a.date === date; })[0] || null; }
+  function permsOf(name) { return (D().permissions || []).filter(function (p) { return p.name === name; }); }
+  function permFor(name, date, type) { return permsOf(name).filter(function (p) { return p.type === type && p.from <= date && (p.to || p.from) >= date && p.status !== 'REJECTED'; })[0] || null; }
+  function excuseFor(name, date) { return permsOf(name).filter(function (p) { return p.status === 'APPROVED' && EXCUSE.indexOf(p.type) >= 0 && p.from <= date && (p.to || p.from) >= date; })[0] || null; }
+  function upsertAtt(rec) {
+    var list = D().attendance = D().attendance || [];
+    for (var i = 0; i < list.length; i++) if (list[i].name === rec.name && list[i].date === rec.date) { list[i] = rec; return; }
+    list.push(rec);
+  }
+  function attPeople() { return D().employees.filter(KPI.mustAttend); }
+  function pendingPerms() { return (D().permissions || []).filter(function (p) { return p.status === 'PENDING'; }); }
+  function dateRangeTxt(p) { return p.to && p.to !== p.from ? fmtDate(p.from) + ' – ' + fmtDate(p.to, { day: 'numeric', month: 'short', year: 'numeric' }) : fmtDate(p.from, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }); }
+
+  function dayStatus(name, date) {
+    var c = attCfg(), rec = attOf(name, date), ex = excuseFor(name, date), work = KPI.isWorkday(date, c);
+    if (ex && work) return { code: ex.type, label: PERM[ex.type].label, cls: 'st-none' };
+    if (rec && rec.in) {
+      if (!work) return { code: 'LIBUR_MASUK', label: 'Masuk hari libur', cls: 'st-none' };
+      var lm = KPI.lateMinutes(rec, c);
+      if (lm > c.lateGrace) {
+        var p = permFor(name, date, 'TERLAMBAT');
+        if (p && p.status === 'APPROVED') return { code: 'TERLAMBAT_IZIN', label: 'Terlambat (izin)', cls: 'st-warning', lateMin: lm };
+        return { code: 'TERLAMBAT', label: 'Terlambat ' + durTxt(lm), cls: 'st-critical', lateMin: lm };
+      }
+      return { code: 'TEPAT', label: 'Tepat waktu', cls: 'st-good' };
+    }
+    if (!work) return { code: 'LIBUR', label: 'Libur', cls: 'st-none' };
+    if (c.attendanceStart && date < c.attendanceStart) return { code: 'NA', label: 'Belum berlaku', cls: 'st-none' };
+    if (date < today()) return { code: 'ALPA', label: 'Tanpa keterangan', cls: 'st-critical' };
+    return { code: 'BELUM', label: 'Belum presensi', cls: 'st-warning' };
+  }
+  function statusBadgeAtt(s) { return '<span class="badge ' + s.cls + '">' + esc(s.label) + '</span>'; }
+
+  /** Kartu presensi di Beranda & halaman Absensi. */
+  function presenceCard() {
+    if (!attEnabled() || !iMustAttend()) return '';
+    var c = attCfg(), t = today(), me = S.user.name, rec = attOf(me, t), work = KPI.isWorkday(t, c), nm = nowMin();
+    var ex = excuseFor(me, t), state, btn = '';
+    if (rec && rec.in && rec.out) {
+      state = '<div class="bold">Presensi hari ini selesai ' + icon('check').replace('<svg ', '<svg width="16" height="16" style="vertical-align:-3px;color:var(--good)" ') + '</div>' +
+        '<div class="small text-2">Masuk ' + t5(rec.in) + ' · Pulang ' + t5(rec.out) + (rec.otMin ? ' · Lembur ' + durTxt(rec.otMin) : '') + '</div>';
+    } else if (rec && rec.in) {
+      var st = dayStatus(me, t);
+      state = '<div class="bold row wrap" style="gap:8px">Masuk ' + t5(rec.in) + ' ' + statusBadgeAtt(st) + '</div><div class="small text-2">Jam pulang ' + hm(c.workEnd) + ' ' + tzLabel() + '. Jangan lupa presensi pulang.</div>';
+      btn = '<button class="btn" data-act="check-out">' + icon('logout') + 'Presensi pulang</button>';
+    } else {
+      var lateNow = work && !ex && nm > c.workStart + c.lateGrace;
+      state = '<div class="bold">' + (ex ? esc(PERM[ex.type].label) + ' (disetujui)' : 'Belum presensi masuk') + '</div>' +
+        '<div class="small ' + (lateNow ? 'down bold' : 'text-2') + '">' + (!work ? 'Hari libur. Presensi tetap bisa untuk lembur.' : lateNow ? 'Sudah lewat jam ' + hm(c.workStart) + '. Kamu terlambat ' + durTxt(nm - c.workStart) + '!' : 'Jam masuk ' + hm(c.workStart) + ' ' + tzLabel()) + '</div>';
+      btn = '<button class="btn" data-act="check-in">' + icon('check') + 'Presensi masuk</button>';
+    }
+    return '<div class="card presence mb' + (!rec && work && nm > c.workStart + c.lateGrace && !ex ? ' presence-late' : '') + '">' +
+      '<div class="presence-clock"><div class="xs muted">' + esc(fmtDate(t, { weekday: 'long', day: 'numeric', month: 'long' })) + '</div><div class="clock num" data-clock>' + timeInTz(serverNow()) + '</div><div class="xs muted">' + tzLabel() + '</div></div>' +
+      '<div class="col grow" style="min-width:180px">' + state + '</div><div class="row wrap">' + btn +
+      '<a class="btn ghost" href="#/attendance" data-act="att-tab" data-v="perm">' + icon('report') + 'Ajukan izin</a></div></div>';
+  }
+
+  function starburst(cx, cy, r1, r2, n) {
+    var pts = [];
+    for (var i = 0; i < n * 2; i++) { var r = i % 2 ? r2 : r1, a = Math.PI * i / n - Math.PI / 2; pts.push((cx + r * Math.cos(a)).toFixed(1) + ',' + (cy + r * Math.sin(a)).toFixed(1)); }
+    return pts.join(' ');
+  }
+  /** Popup ala komik saat terlambat. */
+  function comicPopup(o) {
+    var excused = o.permission === 'APPROVED', pending = o.permission === 'PENDING';
+    var q = LATE_QUOTES[Math.floor(Math.random() * LATE_QUOTES.length)];
+    var host = document.createElement('div');
+    host.className = 'comic-backdrop';
+    host.setAttribute('role', 'alertdialog');
+    host.setAttribute('aria-modal', 'true');
+    host.setAttribute('aria-label', excused ? 'Terlambat dengan izin' : 'Terlambat, denda Rp ' + fmtN(o.fine));
+    host.innerHTML = '<div class="comic' + (excused ? ' ok' : '') + '">' +
+      '<div class="comic-sfx s1">' + (excused ? 'PHEW!' : 'BOOM!') + '</div><div class="comic-sfx s2">' + (excused ? 'AMAN!' : 'KRIIING!') + '</div>' +
+      '<div class="comic-burst"><svg viewBox="0 0 200 200" aria-hidden="true"><polygon points="' + starburst(100, 100, 98, 72, 14) + '"/></svg><span>TELAT!</span></div>' +
+      '<div class="comic-bubble">' + (excused
+        ? '<div class="comic-fine">IZIN<br>DISETUJUI</div><div class="comic-note">Kali ini tanpa denda ✓</div>'
+        : '<div class="comic-fine">DENDA<br>Rp ' + fmtN(o.fine) + '</div><div class="comic-note">' + (pending ? 'Izin terlambatmu masih menunggu persetujuan. Denda batal kalau disetujui manager.' : esc(q)) + '</div>') + '</div>' +
+      '<div class="comic-sub">Masuk ' + esc(t5(o.inTime)) + ' · terlambat ' + esc(durTxt(o.lateMin)) + '</div>' +
+      '<button class="comic-btn" type="button">' + (excused ? 'Oke, lanjut kerja! 💪' : 'Siap, besok lebih pagi! 🙏') + '</button></div>';
+    document.body.appendChild(host);
+    function onKey(e) { if (e.key === 'Escape') close(); }
+    function close() { document.removeEventListener('keydown', onKey); host.classList.add('out'); setTimeout(function () { host.remove(); }, 220); }
+    host.querySelector('.comic-btn').onclick = close;
+    host.addEventListener('click', function (e) { if (e.target === host) close(); });
+    document.addEventListener('keydown', onKey);
+    setTimeout(function () { var b = host.querySelector('.comic-btn'); if (b) b.focus(); }, 60);
+    try { if (navigator.vibrate) navigator.vibrate([120, 60, 160]); } catch (e) { }
+  }
+
+  function doCheckIn(btn) {
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Mencatat…'; }
+    API.call('checkIn', {}).then(function (r) {
+      upsertAtt(r.record); syncClock(r.serverTime); render();
+      if (r.already) return toast('Kamu sudah presensi masuk jam ' + t5(r.record.in) + '.');
+      if (r.late) comicPopup({ lateMin: r.lateMin, inTime: r.record.in, fine: r.fine || attCfg().lateFine, permission: r.latePermission });
+      else toast(r.workday ? 'Presensi masuk ' + t5(r.record.in) + ' · Tepat waktu 👍' : 'Presensi masuk ' + t5(r.record.in) + ' (hari libur)');
+    }).catch(function (e) { render(); handleErr(e); });
+  }
+  function doCheckOut(payload, btn) {
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Mencatat…'; }
+    API.call('checkOut', payload).then(function (r) {
+      upsertAtt(r.record); closeModal(); render();
+      toast(r.already ? 'Kamu sudah presensi pulang jam ' + t5(r.record.out) + '.' : 'Presensi pulang ' + t5(r.record.out) + (r.overtimeMin ? ' · lembur ' + durTxt(r.overtimeMin) + ' tercatat' : '') + ' ✓');
+    }).catch(function (e) { if (btn) { btn.disabled = false; btn.textContent = 'Coba lagi'; } handleErr(e); });
+  }
+  function checkOutFlow() {
+    var c = attCfg(), t = today(), work = KPI.isWorkday(t, c), nm = nowMin();
+    if (work && nm < c.workEnd) {
+      openModal({
+        title: 'Pulang lebih awal?',
+        body: '<p class="text-2 mb">Sekarang ' + hm(nm) + ', jam pulang ' + hm(c.workEnd) + ' ' + tzLabel() + '. Tulis alasan singkat. Kalau sudah dapat izin, ajukan juga lewat menu <b>Izin</b>.</p>' +
+          '<div class="field"><label>Alasan pulang lebih awal</label><textarea class="input" id="early-note" rows="2" placeholder="Misal: ke dokter, urusan keluarga…"></textarea></div>',
+        foot: '<button class="btn ghost" data-act="modal-close">Batal</button><button class="btn" id="co-early">' + icon('logout') + 'Presensi pulang</button>',
+        mount: function (m) { $('#co-early', m).onclick = function () { doCheckOut({ earlyNote: $('#early-note', m).value }, this); }; }
+      });
+      return;
+    }
+    if (!work || nm > c.workEnd) {
+      var opts = leaders('MANAGER').map(function (e) { return [e.name, 'Manager ' + cap(e.name)]; })
+        .concat(leaders('BOSS').map(function (e) { return [e.name, 'Bos ' + cap(e.name)]; }))
+        .concat([['Inisiatif sendiri', 'Inisiatif sendiri'], ['LAINNYA', 'Lainnya…']]);
+      openModal({
+        title: 'Kamu lembur hari ini?',
+        body: '<p class="text-2 mb">' + (work ? 'Sudah lewat jam pulang (' + hm(c.workEnd) + '), sekarang ' + hm(nm) + '.' : 'Hari ini hari libur.') + ' Kalau kamu lembur, isi keterangannya supaya tercatat.</p>' +
+          '<div class="seg mb" role="radiogroup"><button class="active" data-ot="0" type="button">Tidak, pulang biasa</button><button data-ot="1" type="button">Ya, saya lembur</button></div>' +
+          '<div id="ot-fields" class="hidden"><div class="field"><label>Lembur untuk apa?</label><textarea class="input" id="ot-reason" rows="3" placeholder="Misal: render 5 video, revisi thumbnail klien…"></textarea></div>' +
+          '<div class="field"><label>Atas perintah siapa?</label><select class="input" id="ot-by">' + opts.map(function (o) { return '<option value="' + esc(o[0]) + '">' + esc(o[1]) + '</option>'; }).join('') + '</select>' +
+          '<input class="input mt-sm hidden" id="ot-by-other" placeholder="Tulis nama yang memerintahkan"></div></div>',
+        foot: '<button class="btn ghost" data-act="modal-close">Batal</button><button class="btn" id="co-ot">' + icon('logout') + 'Presensi pulang</button>',
+        mount: function (m) {
+          var isOt = false;
+          $$('[data-ot]', m).forEach(function (b) {
+            b.onclick = function () {
+              isOt = this.dataset.ot === '1';
+              var self = this;
+              $$('[data-ot]', m).forEach(function (x) { x.classList.toggle('active', x === self); });
+              $('#ot-fields', m).classList.toggle('hidden', !isOt);
+              if (isOt) $('#ot-reason', m).focus();
+            };
+          });
+          $('#ot-by', m).onchange = function () { $('#ot-by-other', m).classList.toggle('hidden', this.value !== 'LAINNYA'); };
+          $('#co-ot', m).onclick = function () {
+            if (!isOt) return doCheckOut({}, this);
+            var reason = $('#ot-reason', m).value.trim(), by = $('#ot-by', m).value;
+            if (by === 'LAINNYA') by = $('#ot-by-other', m).value.trim();
+            if (reason.length < 3) return toast('Tulis lembur untuk apa.', 'error');
+            if (!by) return toast('Isi atas perintah siapa.', 'error');
+            doCheckOut({ overtime: { reason: reason, by: by } }, this);
+          };
+        }
+      });
+      return;
+    }
+    confirmBox('Presensi pulang?', 'Jam pulang dicatat sekarang (' + hm(nm) + ').', 'Presensi pulang').then(function (ok) { if (ok) doCheckOut({}); });
+  }
+
+  function monthOptions() {
+    var t = today(), out = [], m = KPI.monthStart(t);
+    for (var i = 0; i < 4; i++) { out.push(m.slice(0, 7)); m = KPI.monthStart(KPI.addDays(m, -1)); }
+    return out;
+  }
+  function monthLabel(ym) { return new Date(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7) - 1, 1)).toLocaleDateString('id-ID', { timeZone: 'UTC', month: 'long', year: 'numeric' }); }
+  function recapFor(ym, names) {
+    var from = ym + '-01', to = KPI.monthEnd(from);
+    return KPI.attendanceRecap({ attendance: D().attendance || [], permissions: D().permissions || [], employees: D().employees, from: from, to: to, today: today(), config: cfg(), names: names });
+  }
+  function monthSelect(cur, act) {
+    return '<select class="input" style="width:auto" data-change="' + act + '">' + monthOptions().map(function (m) { return '<option value="' + m + '"' + (m === cur ? ' selected' : '') + '>' + esc(monthLabel(m)) + '</option>'; }).join('') + '</select>';
+  }
+  function miniStat(label, value, sub, cls) {
+    return '<div class="card stat"><div class="label">' + label + '</div><div class="value num ' + (cls || '') + '" style="font-size:24px">' + value + '</div><div class="delta muted">' + (sub || '&nbsp;') + '</div></div>';
+  }
+
+  function attendanceView() {
+    if (!attEnabled()) return pageHead('Absensi') + '<div class="card"><div class="empty">' + icon('clock') + '<div>Fitur absensi aktif setelah backend 1.3.0 dipasang.</div></div></div>';
+    var c = attCfg();
+    var tabs = [];
+    if (iMustAttend()) tabs.push(['me', 'Presensi saya']);
+    tabs.push(['perm', 'Izin']);
+    if (isAdmin()) {
+      var pend = pendingPerms().length;
+      tabs.push(['team', 'Tim hari ini'], ['approve', 'Persetujuan' + (pend ? ' <span class="count-badge">' + pend + '</span>' : '')], ['recap', 'Rekap bulanan']);
+    }
+    var ids = tabs.map(function (x) { return x[0]; });
+    var tab = ids.indexOf(S.attTab) >= 0 ? S.attTab : ids[0];
+    var body = tab === 'perm' ? attPermView() : tab === 'team' ? attTeamView() : tab === 'approve' ? attApproveView() : tab === 'recap' ? attRecapView() : attMeView();
+    return pageHead('Absensi', 'Jam kerja ' + hm(c.workStart) + '–' + hm(c.workEnd) + ' ' + tzLabel() + ' · terlambat = denda Rp ' + fmtN(c.lateFine) + ' · jam presensi memakai jam server.') +
+      '<div class="tabs">' + tabs.map(function (x) { return '<button class="' + (tab === x[0] ? 'active' : '') + '" data-act="att-tab" data-v="' + x[0] + '">' + x[1] + '</button>'; }).join('') + '</div>' + body;
+  }
+
+  function attMeView() {
+    var me = S.user.name, ym = S.attMonth || today().slice(0, 7);
+    var r = recapFor(ym, [me]).map[me];
+    var from = ym + '-01', to = KPI.monthEnd(from), t = today(), c = attCfg();
+    if (to > t) to = t;
+    var rows = [];
+    if (from <= to) KPI.eachDay(from, to, function (d) { rows.unshift(d); });
+    var tr = rows.map(function (d) {
+      var s = dayStatus(me, d), rec = attOf(me, d);
+      if (s.code === 'LIBUR' || s.code === 'NA') return '';
+      var notes = [];
+      if (rec && rec.otMin) notes.push('Lembur ' + durTxt(rec.otMin) + ': ' + rec.otFor + ' (perintah ' + rec.otBy + ')');
+      if (rec && rec.early) notes.push('Pulang awal: ' + rec.early);
+      if (rec && rec.notes && rec.updatedBy && rec.updatedBy !== me) notes.push(rec.notes);
+      return '<tr><td class="nowrap">' + esc(fmtDate(d, { weekday: 'short', day: 'numeric', month: 'short' })) + '</td><td>' + statusBadgeAtt(s) + '</td>' +
+        '<td class="num">' + (rec ? t5(rec.in) : '—') + '</td><td class="num">' + (rec && rec.out ? t5(rec.out) : '—') + '</td><td class="small text-2">' + esc(notes.join(' · ')) + '</td></tr>';
+    }).join('');
+    return presenceCard() +
+      '<div class="row between wrap mb"><h2>Rekap ' + esc(monthLabel(ym)) + '</h2>' + monthSelect(ym, 'att-month') + '</div>' +
+      (r ? '<div class="grid grid-4 mb">' +
+        miniStat('Skor kehadiran', fmtPct(r.rate), 'dipakai di KPI') +
+        miniStat('Tepat waktu', r.onTime, r.excusedLate ? '+' + r.excusedLate + ' terlambat (izin)' : 'hari') +
+        miniStat('Terlambat', r.late, r.late ? 'total ' + durTxt(r.lateMin) : 'hari', r.late ? 'down' : '') +
+        miniStat('Denda', 'Rp ' + fmtN(r.fines), r.late + ' × Rp ' + fmtN(c.lateFine), r.fines ? 'down' : '') +
+        miniStat('Tanpa keterangan', r.alpa, 'hari', r.alpa ? 'down' : '') +
+        miniStat('Izin / sakit / cuti', r.izin + ' / ' + r.sakit + ' / ' + r.cuti, 'disetujui manager') +
+        miniStat('Lembur', durTxt(r.overtimeMin), r.overtimeDays + ' hari') +
+        miniStat('Pulang awal', r.early, r.noCheckout ? r.noCheckout + '× lupa presensi pulang' : 'hari') + '</div>' : '') +
+      '<div class="card pad-0">' + (tr ? '<div class="table-wrap"><table class="table"><thead><tr><th>Tanggal</th><th>Status</th><th class="num">Masuk</th><th class="num">Pulang</th><th>Keterangan</th></tr></thead><tbody>' + tr + '</tbody></table></div>'
+        : '<div class="empty">' + icon('calendar') + '<div>Belum ada data absensi bulan ini.</div></div>') + '</div>';
+  }
+
+  function attPermView() {
+    var me = S.user.name, admin = isAdmin(), t = today();
+    var f = S.pf || (S.pf = { type: 'TERLAMBAT', from: t, to: t, time: '', reason: '', name: '', attachment: null });
+    var types = Object.keys(PERM);
+    var multi = f.type === 'TIDAK_MASUK' || f.type === 'SAKIT' || f.type === 'CUTI';
+    var forOthers = admin ? '<div class="field"><label>Untuk</label><select class="input" data-pf="name"><option value="">Saya sendiri</option>' +
+      attPeople().filter(function (e) { return e.name !== me; }).map(function (e) { return '<option value="' + esc(e.name) + '"' + (f.name === e.name ? ' selected' : '') + '>' + esc(cap(e.name)) + '</option>'; }).join('') +
+      '</select><div class="hint">Izin yang diinput manager untuk orang lain langsung berstatus disetujui.</div></div>' : '';
+    var form = '<div class="card"><h2 class="mb">Ajukan izin</h2><form data-form="perm">' + forOthers +
+      '<div class="field"><label>Jenis izin</label><div class="chips">' + types.map(function (k) { return '<button type="button" class="chip ' + (f.type === k ? 'active' : '') + '" data-act="pf-type" data-v="' + k + '">' + esc(PERM[k].label) + '</button>'; }).join('') + '</div></div>' +
+      '<div class="form-row"><div class="field"><label>' + (multi ? 'Dari tanggal' : 'Tanggal') + '</label><input class="input" type="date" data-pf="from" value="' + esc(f.from) + '" required></div>' +
+      (multi ? '<div class="field"><label>Sampai tanggal</label><input class="input" type="date" data-pf="to" value="' + esc(f.to < f.from ? f.from : f.to) + '" min="' + esc(f.from) + '"></div>'
+        : f.type === 'TERLAMBAT' ? '<div class="field"><label>Perkiraan jam tiba</label><input class="input" type="time" data-pf="time" value="' + esc(f.time) + '"></div>'
+          : f.type === 'PULANG_AWAL' ? '<div class="field"><label>Rencana jam pulang</label><input class="input" type="time" data-pf="time" value="' + esc(f.time) + '"></div>' : '') + '</div>' +
+      '<div class="field"><label>Alasan / keterangan</label><textarea class="input" data-pf="reason" rows="3" required placeholder="' + (f.type === 'SAKIT' ? 'Misal: demam, sudah ke dokter' : f.type === 'TERLAMBAT' ? 'Misal: ban bocor, antar keluarga ke RS' : 'Tulis alasannya') + '">' + esc(f.reason) + '</textarea></div>' +
+      (f.type === 'SAKIT' ? '<div class="field"><label>Foto surat dokter / surat keterangan sakit <span class="muted">(opsional)</span></label>' +
+        (f.attachment ? '<div class="attach-preview"><img src="' + f.attachment.preview + '" alt="Pratinjau surat dokter"><button type="button" class="btn ghost sm" data-act="pf-remove-file">' + icon('trash') + 'Hapus foto</button></div>'
+          : '<label class="upload-box"><input type="file" id="pf-file" accept="image/*"><span>' + icon('download') + '<b>Pilih / foto surat dokter</b><span class="xs muted">JPG/PNG · otomatis dikecilkan</span></span></label>') + '</div>' : '') +
+      '<div class="notice small mb">' + (f.type === 'TERLAMBAT' ? 'Kalau izin terlambat disetujui manager, denda hari itu dibatalkan.' : multi ? 'Hari izin/sakit/cuti yang disetujui tidak dihitung bolos dan target output hari itu dihapus dari KPI.' : 'Izin pulang awal dicatat sebagai keterangan.') + '</div>' +
+      '<button class="btn block" id="pf-submit">' + icon('check') + 'Kirim pengajuan</button></form></div>';
+
+    var mine = permsOf(me).slice().sort(function (a, b) { return (b.created || b.from).localeCompare(a.created || a.from); });
+    var list = mine.length ? mine.map(function (p) { return permItem(p, false); }).join('') : '<div class="empty">' + icon('report') + '<div>Belum ada pengajuan izin.</div></div>';
+    return '<div class="grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)" id="perm-grid">' + form +
+      '<div class="card"><h2 class="mb">Pengajuan saya</h2><div class="list">' + list + '</div></div></div>' +
+      '<style>@media(max-width:900px){#perm-grid{grid-template-columns:minmax(0,1fr)!important}}</style>';
+  }
+
+  function permItem(p, forReview) {
+    var me = S.user.name;
+    var actions = '';
+    if (p.hasAttachment) actions += '<button class="btn ghost sm" data-act="view-att" data-id="' + esc(p.id) + '">' + icon('eye') + 'Lihat surat</button>';
+    if (forReview && p.status === 'PENDING') {
+      actions += p.name === me ? '<span class="xs muted">Menunggu manager lain</span>'
+        : '<button class="btn danger sm" data-act="review-perm" data-id="' + esc(p.id) + '" data-v="REJECTED">' + icon('x') + 'Tolak</button><button class="btn sm" data-act="review-perm" data-id="' + esc(p.id) + '" data-v="APPROVED">' + icon('check') + 'Setujui</button>';
+    }
+    if (!forReview && p.status === 'PENDING' && p.name === me) actions += '<button class="btn ghost sm" data-act="cancel-perm" data-id="' + esc(p.id) + '">' + icon('trash') + 'Batalkan</button>';
+    return '<div class="list-item" style="align-items:flex-start">' + (forReview ? personAvatar(p.name, 'sm') : '<div class="stat-icon">' + icon(p.type === 'SAKIT' ? 'alert' : p.type === 'TERLAMBAT' ? 'clock' : 'calendar') + '</div>') +
+      '<div class="col grow"><div class="row wrap" style="gap:6px">' + (forReview ? '<span class="bold">' + esc(cap(p.name)) + '</span>' : '') + '<span class="bold">' + esc((PERM[p.type] || { label: p.type }).label) + '</span>' + permBadge(p.status) + '</div>' +
+      '<div class="small text-2">' + esc(dateRangeTxt(p)) + (p.time ? ' · jam ' + esc(p.time) : '') + '</div>' +
+      (p.reason ? '<div class="small">' + esc(p.reason) + '</div>' : '') +
+      (p.reviewedBy ? '<div class="xs muted">' + (p.status === 'APPROVED' ? 'Disetujui' : 'Ditolak') + ' oleh ' + esc(cap(p.reviewedBy)) + (p.reviewNote ? ': "' + esc(p.reviewNote) + '"' : '') + '</div>' : '') +
+      (actions ? '<div class="row wrap mt-sm" style="gap:6px">' + actions + '</div>' : '') + '</div></div>';
+  }
+
+  function attTeamView() {
+    var d = S.attDate || today(), c = attCfg();
+    var ppl = attPeople().slice().sort(function (a, b) { return (KPI.isLeader(a) ? 1 : 0) - (KPI.isLeader(b) ? 1 : 0) || a.name.localeCompare(b.name); });
+    var cnt = { TEPAT: 0, TERLAMBAT: 0, IZIN: 0, BELUM: 0 };
+    var rows = ppl.map(function (e) {
+      var s = dayStatus(e.name, d), rec = attOf(e.name, d);
+      if (s.code === 'TEPAT' || s.code === 'LIBUR_MASUK') cnt.TEPAT++;
+      else if (s.code === 'TERLAMBAT' || s.code === 'TERLAMBAT_IZIN') cnt.TERLAMBAT++;
+      else if (EXCUSE.indexOf(s.code) >= 0) cnt.IZIN++;
+      else if (s.code === 'BELUM' || s.code === 'ALPA') cnt.BELUM++;
+      var info = [];
+      if (rec && rec.otMin) info.push('Lembur ' + durTxt(rec.otMin) + ' · ' + rec.otFor + ' · perintah ' + rec.otBy);
+      if (rec && rec.early) info.push('Pulang awal: ' + rec.early);
+      if (rec && rec.notes && rec.updatedBy !== e.name) info.push(rec.notes);
+      return '<tr><td><div class="row">' + personAvatar(e.name, 'sm') + '<div class="col"><span class="bold">' + esc(cap(e.name)) + '</span>' + (KPI.isLeader(e) ? posBadge(e) : '') + '</div></div></td>' +
+        '<td>' + statusBadgeAtt(s) + '</td><td class="num">' + (rec ? t5(rec.in) : '—') + '</td><td class="num">' + (rec && rec.out ? t5(rec.out) : '—') + '</td>' +
+        '<td class="small text-2">' + esc(info.join(' · ')) + '</td><td class="right"><button class="btn ghost sm" data-act="edit-att" data-name="' + esc(e.name) + '">' + icon('edit') + 'Koreksi</button></td></tr>';
+    }).join('');
+    return '<div class="row between wrap mb"><div class="row wrap"><input class="input" style="width:auto" type="date" data-change="att-date" value="' + esc(d) + '" max="' + today() + '">' +
+      (KPI.isWorkday(d, c) ? '' : '<span class="badge st-none">Hari libur</span>') + '</div>' +
+      '<button class="btn ghost" data-act="edit-att" data-name="">' + icon('plus') + 'Input presensi manual</button></div>' +
+      '<div class="grid grid-4 mb">' + miniStat('Tepat waktu', cnt.TEPAT, 'orang') + miniStat('Terlambat', cnt.TERLAMBAT, 'orang', cnt.TERLAMBAT ? 'down' : '') +
+      miniStat('Izin / sakit / cuti', cnt.IZIN, 'orang') + miniStat(d === today() ? 'Belum presensi' : 'Tanpa keterangan', cnt.BELUM, 'orang', cnt.BELUM ? 'down' : '') + '</div>' +
+      '<div class="card pad-0"><div class="table-wrap"><table class="table"><thead><tr><th>Nama</th><th>Status</th><th class="num">Masuk</th><th class="num">Pulang</th><th>Keterangan</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+  }
+
+  function attEditModal(name) {
+    var d = S.attDate || today(), rec = name ? attOf(name, d) : null;
+    openModal({
+      title: name ? 'Koreksi presensi ' + esc(cap(name)) : 'Input presensi manual',
+      body: '<form id="att-form"><div class="form-row"><div class="field"><label>Nama</label><select class="input" name="name"' + (name ? ' disabled' : '') + '>' +
+        attPeople().map(function (e) { return '<option value="' + esc(e.name) + '"' + (e.name === name ? ' selected' : '') + '>' + esc(cap(e.name)) + '</option>'; }).join('') + '</select></div>' +
+        '<div class="field"><label>Tanggal</label><input class="input" type="date" name="date" value="' + esc(d) + '" max="' + today() + '"></div></div>' +
+        '<div class="form-row"><div class="field"><label>Jam masuk</label><input class="input" type="time" name="in" value="' + esc(rec ? t5(rec.in) : '') + '" required></div>' +
+        '<div class="field"><label>Jam pulang</label><input class="input" type="time" name="out" value="' + esc(rec ? t5(rec.out) : '') + '"></div></div>' +
+        '<div class="form-row"><div class="field"><label>Lembur untuk apa <span class="muted">(opsional)</span></label><input class="input" name="otFor" value="' + esc(rec ? rec.otFor : '') + '"></div>' +
+        '<div class="field"><label>Atas perintah</label><input class="input" name="otBy" value="' + esc(rec ? rec.otBy : '') + '"></div></div>' +
+        '<div class="field"><label>Catatan koreksi</label><input class="input" name="notes" value="' + esc(rec && rec.notes ? rec.notes : '') + '" placeholder="Misal: lupa presensi, sudah dikonfirmasi"></div></form>',
+      foot: (rec ? '<button class="btn danger" data-act="del-att" data-name="' + esc(name) + '">' + icon('trash') + 'Hapus</button><span class="grow"></span>' : '') +
+        '<button class="btn ghost" data-act="modal-close">Batal</button><button class="btn" data-act="save-att" data-name="' + esc(name || '') + '">Simpan</button>'
+    });
+  }
+
+  function attApproveView() {
+    var all = (D().permissions || []).slice();
+    var pend = all.filter(function (p) { return p.status === 'PENDING'; }).sort(function (a, b) { return a.from.localeCompare(b.from); });
+    var done = all.filter(function (p) { return p.status !== 'PENDING'; }).sort(function (a, b) { return (b.reviewedAt || '').localeCompare(a.reviewedAt || ''); }).slice(0, 25);
+    return '<div class="grid grid-2"><div class="card"><div class="card-head"><h2>Menunggu persetujuan</h2><span class="sub">' + pend.length + ' pengajuan</span></div><div class="list">' +
+      (pend.length ? pend.map(function (p) { return permItem(p, true); }).join('') : '<div class="empty">' + icon('check') + '<div>Tidak ada pengajuan yang menunggu.</div></div>') + '</div></div>' +
+      '<div class="card"><div class="card-head"><h2>Riwayat</h2><span class="sub">25 terakhir</span></div><div class="list">' +
+      (done.length ? done.map(function (p) { return permItem(p, true); }).join('') : '<div class="empty">Belum ada.</div>') + '</div></div></div>';
+  }
+
+  function attRecapView() {
+    var ym = S.recapMonth || today().slice(0, 7), c = attCfg();
+    var rec = recapFor(ym);
+    var pos = {};
+    D().employees.forEach(function (e) { pos[e.name] = e; });
+    var list = rec.list.slice().sort(function (a, b) { return b.late - a.late || b.alpa - a.alpa || a.name.localeCompare(b.name); });
+    var totFine = 0, totLate = 0, totOt = 0;
+    var rows = list.map(function (r) {
+      totFine += r.fines; totLate += r.late; totOt += r.overtimeMin;
+      var warn = r.late >= 3 || r.alpa >= 2;
+      return '<tr' + (warn ? ' style="background:var(--critical-soft)"' : '') + '><td><div class="row">' + personAvatar(r.name, 'sm') + '<div class="col"><span class="bold">' + esc(cap(r.name)) + '</span>' +
+        (KPI.isLeader(pos[r.name]) ? posBadge(pos[r.name]) : '') + (warn ? '<span class="badge st-critical">' + icon('alert') + 'Perlu evaluasi</span>' : '') + '</div></div></td>' +
+        '<td class="num bold">' + fmtPct(r.rate) + '</td><td class="num">' + r.present + '</td><td class="num">' + r.onTime + '</td>' +
+        '<td class="num' + (r.late ? ' down bold' : '') + '">' + r.late + (r.late ? '<div class="xs muted">' + durTxt(r.lateMin) + '</div>' : '') + '</td>' +
+        '<td class="num">' + r.izin + ' / ' + r.sakit + ' / ' + r.cuti + '</td><td class="num' + (r.alpa ? ' down bold' : '') + '">' + r.alpa + '</td>' +
+        '<td class="num">' + (r.overtimeMin ? durTxt(r.overtimeMin) : '—') + '</td><td class="num">' + r.early + '</td>' +
+        '<td class="num bold' + (r.fines ? ' down' : '') + '">Rp ' + fmtN(r.fines) + '</td></tr>';
+    }).join('');
+    return '<div class="row between wrap mb"><div class="small muted grow">Bahan evaluasi bulanan. Juga tersimpan otomatis di sheet <b>REKAP ABSENSI</b>.</div>' + monthSelect(ym, 'recap-month') + '</div>' +
+      '<div class="grid grid-4 mb">' + miniStat('Total denda', 'Rp ' + fmtN(totFine), totLate + ' kali terlambat', totFine ? 'down' : '') +
+      miniStat('Rata-rata kehadiran', fmtPct(list.filter(function (r) { return r.rate != null; }).reduce(function (s, r, i, a) { return s + r.rate / a.length; }, 0) || null), list.length + ' orang') +
+      miniStat('Total lembur', durTxt(totOt), 'bulan ini') + miniStat('Perlu evaluasi', list.filter(function (r) { return r.late >= 3 || r.alpa >= 2; }).length, '≥3× terlambat / ≥2× alpa') + '</div>' +
+      '<div class="card pad-0"><div class="table-wrap"><table class="table"><thead><tr><th>Nama</th><th class="num">Skor</th><th class="num">Hadir</th><th class="num">Tepat</th><th class="num">Terlambat</th><th class="num">Izin/Sakit/Cuti</th><th class="num">Alpa</th><th class="num">Lembur</th><th class="num">Pulang awal</th><th class="num">Denda</th></tr></thead><tbody>' + rows + '</tbody></table></div></div>' +
+      '<p class="xs muted mt-sm">Terlambat = presensi masuk lewat jam ' + hm(c.workStart) + (c.lateGrace ? ' + toleransi ' + c.lateGrace + ' menit' : '') + '. Denda Rp ' + fmtN(c.lateFine) + ' per keterlambatan (batal bila izin terlambat disetujui). Alpa = hari kerja tanpa presensi & tanpa izin yang disetujui.</p>';
+  }
+
+  function attTodayCard() {
+    if (!attEnabled()) return '';
+    var t = today(), c = attCfg(), cnt = { ok: 0, late: 0, izin: 0, belum: 0 }, belum = [], late = [];
+    attPeople().forEach(function (e) {
+      var s = dayStatus(e.name, t);
+      if (s.code === 'TEPAT' || s.code === 'LIBUR_MASUK') cnt.ok++;
+      else if (s.code === 'TERLAMBAT' || s.code === 'TERLAMBAT_IZIN') { cnt.late++; late.push(e.name); }
+      else if (EXCUSE.indexOf(s.code) >= 0) cnt.izin++;
+      else if (s.code === 'BELUM') { cnt.belum++; belum.push(e.name); }
+    });
+    var pend = pendingPerms().length;
+    var chip = function (n) { return '<span class="chip" style="cursor:default">' + esc(cap(n)) + '</span>'; };
+    return '<div class="card mt"><div class="card-head"><h2 class="row">' + icon('clock') + 'Kehadiran hari ini</h2><a class="small" href="#/attendance" data-act="att-tab" data-v="team">Detail</a></div>' +
+      (!KPI.isWorkday(t, c) ? '<div class="empty">Hari ini bukan hari kerja.</div>' :
+        '<div class="grid grid-4">' + miniStat('Tepat waktu', cnt.ok, 'orang') + miniStat('Terlambat', cnt.late, late.map(cap).join(', ') || 'orang', cnt.late ? 'down' : '') +
+        miniStat('Izin / sakit', cnt.izin, 'orang') + miniStat('Belum presensi', cnt.belum, 'orang', cnt.belum ? 'down' : '') + '</div>' +
+        (belum.length ? '<div class="mt-sm small text-2 mb">Belum presensi:</div><div class="chips">' + belum.map(chip).join('') + '</div>' : '')) +
+      (pend ? '<a class="remind-banner mt" href="#/attendance" data-act="att-tab" data-v="approve" style="margin-bottom:0">' + icon('bell') + '<div class="grow"><b>' + pend + ' pengajuan izin</b> menunggu persetujuanmu</div><span class="btn sm">Tinjau</span></a>' : '') + '</div>';
+  }
+
+  /** Kecilkan foto (maks 1600px, JPEG) sebelum diunggah. */
+  function compressImage(file) {
+    return new Promise(function (resolve, reject) {
+      if (!file) return reject(new Error('Tidak ada file.'));
+      if (!/^image\//.test(file.type || 'image/')) return reject(new Error('File harus berupa gambar (JPG/PNG).'));
+      var url = URL.createObjectURL(file), img = new Image();
+      img.onload = function () {
+        var max = 1600, w = img.naturalWidth, h = img.naturalHeight, s = Math.min(1, max / Math.max(w, h));
+        var cv = document.createElement('canvas');
+        cv.width = Math.max(1, Math.round(w * s)); cv.height = Math.max(1, Math.round(h * s));
+        var ctx = cv.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+        ctx.drawImage(img, 0, 0, cv.width, cv.height);
+        URL.revokeObjectURL(url);
+        var dataUrl = cv.toDataURL('image/jpeg', 0.82);
+        resolve({ mime: 'image/jpeg', data: dataUrl.split(',')[1], preview: dataUrl, name: file.name });
+      };
+      img.onerror = function () {
+        URL.revokeObjectURL(url);
+        if (file.size > 5 * 1024 * 1024) return reject(new Error('Gambar tidak bisa dibaca atau terlalu besar (maks 5 MB). Coba foto ulang dalam format JPG.'));
+        var fr = new FileReader();
+        fr.onload = function () { resolve({ mime: file.type || 'image/jpeg', data: String(fr.result).split(',')[1], preview: fr.result, name: file.name }); };
+        fr.onerror = function () { reject(new Error('Gagal membaca file.')); };
+        fr.readAsDataURL(file);
+      };
+      img.src = url;
+    });
   }
 
   /* =========================================================
@@ -1329,6 +1773,17 @@
           '<div class="field"><label>Email penerima (pisahkan koma)</label><input class="input" name="REMINDER_EMAILS" value="' + esc(raw.REMINDER_EMAILS || '') + '" placeholder="arya@gmail.com, zul@gmail.com"><div class="hint">Kosong = email pemilik spreadsheet' + ((D().admin.reminderTo || []).length ? ' (' + esc(D().admin.reminderTo.join(', ')) + ')' : '') + '.</div></div>' +
           '<div class="form-row"><div class="field"><label>Kirim H-berapa</label><input class="input" type="number" min="0" max="27" name="REMINDER_DAYS_BEFORE" value="' + esc(raw.REMINDER_DAYS_BEFORE) + '"></div>' +
           '<div class="field"><label>Jam kirim (0–23)</label><input class="input" type="number" min="0" max="23" name="REMINDER_HOUR" value="' + esc(raw.REMINDER_HOUR || 8) + '"></div></div></div></div>';
+      })() + (function () {
+        var c2 = cfg();
+        if (!c2.WORK_START) return '';
+        return '<div class="card" style="grid-column:1/-1"><h2 class="mb row">' + icon('clock') + 'Absensi & denda</h2><div class="grid grid-3" style="gap:0 16px">' +
+          '<div class="field"><label>Jam masuk</label><input class="input" type="time" name="WORK_START" value="' + esc(c2.WORK_START) + '"></div>' +
+          '<div class="field"><label>Jam pulang</label><input class="input" type="time" name="WORK_END" value="' + esc(c2.WORK_END) + '"></div>' +
+          '<div class="field"><label>Toleransi terlambat (menit)</label><input class="input" type="number" min="0" max="120" name="LATE_GRACE_MIN" value="' + esc(c2.LATE_GRACE_MIN) + '"></div>' +
+          '<div class="field"><label>Denda per keterlambatan (Rp)</label><input class="input" type="number" min="0" step="1000" name="LATE_FINE" value="' + esc(c2.LATE_FINE) + '"></div>' +
+          '<div class="field"><label>Nilai kehadiran saat terlambat (%)</label><input class="input" type="number" min="0" max="100" name="ATTENDANCE_LATE_SCORE" value="' + esc(c2.ATTENDANCE_LATE_SCORE) + '"></div>' +
+          '<div class="field"><label>Bobot kehadiran di KPI (%)</label><input class="input" type="number" min="0" max="100" name="WEIGHT_ATTENDANCE" value="' + esc(c2.WEIGHT_ATTENDANCE) + '"></div>' +
+          '<div class="field"><label>Absensi mulai dihitung</label><input class="input" type="date" name="ATTENDANCE_START" value="' + esc(c2.ATTENDANCE_START) + '"><div class="hint">Hari sebelum tanggal ini tidak dianggap bolos.</div></div></div></div>';
       })() + '<div style="grid-column:1/-1" class="row"><button type="button" class="btn" data-act="save-config">' + icon('check') + 'Simpan pengaturan</button></div></form>';
   }
 
@@ -1450,6 +1905,69 @@
       }).catch(function (e) { el.disabled = false; handleErr(e); });
     },
     'edit-channel': function (el) { channelModal(el.dataset.key); },
+    'check-in': function (el) { doCheckIn(el); },
+    'check-out': function () { checkOutFlow(); },
+    'att-tab': function (el, ev) { if (ev) ev.preventDefault(); S.attTab = el.dataset.v; if (route().name !== 'attendance') go('attendance'); else render(); },
+    'pf-type': function (el) { S.pf.type = el.dataset.v; if (S.pf.type !== 'SAKIT') S.pf.attachment = null; render(); },
+    'pf-remove-file': function () { S.pf.attachment = null; render(); },
+    'view-att': function (el) {
+      el.disabled = true;
+      API.call('getAttachment', { id: el.dataset.id }).then(function (r) {
+        el.disabled = false;
+        openModal({ title: 'Surat keterangan', wide: true, body: '<img class="attach-full" src="data:' + esc(r.mime) + ';base64,' + r.data + '" alt="Lampiran surat keterangan">' });
+      }).catch(function (e) { el.disabled = false; handleErr(e); });
+    },
+    'review-perm': function (el) {
+      var id = el.dataset.id, st = el.dataset.v;
+      var p = (D().permissions || []).filter(function (x) { return x.id === id; })[0];
+      if (!p) return;
+      openModal({
+        title: (st === 'APPROVED' ? 'Setujui' : 'Tolak') + ' ' + esc((PERM[p.type] || {}).label || p.type) + ' · ' + esc(cap(p.name)),
+        body: '<p class="text-2 mb">' + esc(dateRangeTxt(p)) + (p.reason ? ' · ' + esc(p.reason) : '') + '</p><div class="field"><label>Catatan untuk ' + esc(cap(p.name)) + ' <span class="muted">(opsional)</span></label><input class="input" id="rv-note"></div>',
+        foot: '<button class="btn ghost" data-act="modal-close">Batal</button><button class="btn ' + (st === 'APPROVED' ? '' : 'danger') + '" id="rv-ok">' + (st === 'APPROVED' ? 'Setujui' : 'Tolak') + '</button>',
+        mount: function (m) {
+          $('#rv-ok', m).onclick = function () {
+            var b = this; b.disabled = true;
+            API.call('reviewPermission', { id: id, status: st, note: $('#rv-note', m).value }).then(function (r) {
+              var list = D().permissions;
+              for (var i = 0; i < list.length; i++) if (list[i].id === id) list[i] = r.permission;
+              closeModal(); toast(st === 'APPROVED' ? 'Izin disetujui ✓' : 'Izin ditolak'); render();
+            }).catch(function (e) { b.disabled = false; handleErr(e); });
+          };
+        }
+      });
+    },
+    'cancel-perm': function (el) {
+      confirmBox('Batalkan pengajuan?', 'Pengajuan izin ini akan dihapus.', 'Batalkan', true).then(function (ok) {
+        if (!ok) return;
+        API.call('cancelPermission', { id: el.dataset.id }).then(function () {
+          D().permissions = (D().permissions || []).filter(function (x) { return x.id !== el.dataset.id; });
+          toast('Pengajuan dibatalkan.'); render();
+        }).catch(handleErr);
+      });
+    },
+    'edit-att': function (el) { attEditModal(el.dataset.name); },
+    'save-att': function (el) {
+      var f = formData($('#att-form'));
+      var name = el.dataset.name || f.name;
+      if (!f.in) return toast('Jam masuk wajib diisi.', 'error');
+      if (f.out && f.out < f.in) return toast('Jam pulang tidak boleh sebelum jam masuk.', 'error');
+      if (f.otFor && !f.otBy) return toast('Isi lembur atas perintah siapa.', 'error');
+      el.disabled = true;
+      API.call('setAttendance', { record: { name: name, date: f.date, in: f.in, out: f.out, otFor: f.otFor, otBy: f.otBy, notes: f.notes } }).then(function (r) {
+        upsertAtt(r.record); closeModal(); toast('Presensi disimpan ✓'); render();
+      }).catch(function (e) { el.disabled = false; handleErr(e); });
+    },
+    'del-att': function (el) {
+      var f = formData($('#att-form'));
+      confirmBox('Hapus presensi?', 'Data presensi ' + esc(cap(el.dataset.name)) + ' tanggal ' + esc(fmtDate(f.date)) + ' akan dihapus.', 'Hapus', true).then(function (ok) {
+        if (!ok) return;
+        API.call('setAttendance', { record: { name: el.dataset.name, date: f.date, remove: true } }).then(function () {
+          D().attendance = (D().attendance || []).filter(function (a) { return !(a.name === el.dataset.name && a.date === f.date); });
+          toast('Presensi dihapus.'); render();
+        }).catch(handleErr);
+      });
+    },
     'toggle-pin': function (el) {
       var i = $('#pin-input'); if (!i) return;
       i.type = i.type === 'password' ? 'text' : 'password';
@@ -1518,6 +2036,11 @@
         WEIGHT_DISCIPLINE: f.WEIGHT_DISCIPLINE, BACKDATE_DAYS: f.BACKDATE_DAYS, EMPLOYEE_SEE_ALL: f.EMPLOYEE_SEE_ALL ? 'TRUE' : 'FALSE',
         SYNC_CURRENT_RESULT: f.SYNC_CURRENT_RESULT ? 'TRUE' : 'FALSE', YT_SYNC_HOURS: f.YT_SYNC_HOURS, YT_MAX_VIDEOS: f.YT_MAX_VIDEOS, TIMEZONE: f.TIMEZONE
       };
+      if (f.WORK_START !== undefined) {
+        if (!/^\d{2}:\d{2}$/.test(f.WORK_START) || !/^\d{2}:\d{2}$/.test(f.WORK_END) || f.WORK_END <= f.WORK_START) return toast('Jam masuk/pulang tidak valid.', 'error');
+        conf.WORK_START = f.WORK_START; conf.WORK_END = f.WORK_END; conf.LATE_GRACE_MIN = f.LATE_GRACE_MIN; conf.LATE_FINE = f.LATE_FINE;
+        conf.ATTENDANCE_LATE_SCORE = f.ATTENDANCE_LATE_SCORE; conf.WEIGHT_ATTENDANCE = f.WEIGHT_ATTENDANCE; conf.ATTENDANCE_START = f.ATTENDANCE_START;
+      }
       if (f.REMINDER_DAYS_BEFORE !== undefined) {
         var bad = String(f.REMINDER_EMAILS || '').split(/[,;\s]+/).filter(function (x) { return x && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x); });
         if (bad.length) return toast('Email tidak valid: ' + bad.join(', '), 'error');
@@ -1534,6 +2057,9 @@
     'kpi-from': function (el) { S.kpi.from = el.value; if (!S.kpi.to) S.kpi.to = today(); render(); },
     'kpi-to': function (el) { S.kpi.to = el.value; if (!S.kpi.from) S.kpi.from = KPI.monthStart(today()); render(); },
     'ch-sort': function (el) { S.ch.sort = el.value; render(); },
+    'att-month': function (el) { S.attMonth = el.value; render(); },
+    'recap-month': function (el) { S.recapMonth = el.value; render(); },
+    'att-date': function (el) { S.attDate = el.value || today(); render(); },
     'ch-q': function (el) { S.ch.q = el.value; var pos = el.selectionStart; render(); var i = $('[data-change="ch-q"]'); if (i) { i.focus(); try { i.setSelectionRange(pos, pos); } catch (e) { } } }
   };
 
@@ -1547,6 +2073,7 @@
     document.addEventListener('input', function (e) {
       var el = e.target;
       if (el.dataset.f && S.form) { S.form[el.dataset.f] = el.value; S.dirty = true; }
+      if (el.dataset.pf && S.pf) { S.pf[el.dataset.pf] = el.value; S.dirty = true; }
       if (el.dataset.change === 'ch-q') { clearTimeout(S._qT); S._qT = setTimeout(function () { CHANGE['ch-q'](el); }, 250); }
     });
     document.addEventListener('change', function (e) {
@@ -1555,6 +2082,16 @@
         S.form[el.dataset.f] = el.value; S.dirty = true;
         if (el.dataset.f === 'employee') { S.form.channel = ''; render(); }
         if (el.dataset.f === 'channel' || el.dataset.f === 'date') render();
+      }
+      if (el.dataset.pf && S.pf) {
+        S.pf[el.dataset.pf] = el.value; S.dirty = true;
+        if (el.dataset.pf === 'from' && S.pf.to < S.pf.from) { S.pf.to = S.pf.from; render(); }
+        if (el.dataset.pf === 'name') render();
+      }
+      if (el.id === 'pf-file' && el.files && el.files[0]) {
+        toast('Memproses foto…');
+        compressImage(el.files[0]).then(function (a) { S.pf.attachment = a; S.dirty = true; render(); })
+          .catch(function (e) { toast(e.message, 'error'); el.value = ''; });
       }
       if (el.dataset.change && el.dataset.change !== 'ch-q' && CHANGE[el.dataset.change]) CHANGE[el.dataset.change](el);
     });
@@ -1584,6 +2121,21 @@
         });
       } else if (kind === 'report') {
         submitReport(form);
+      } else if (kind === 'perm') {
+        var pf = S.pf, sb = $('#pf-submit');
+        if (!pf.from) return toast('Isi tanggal.', 'error');
+        if (String(pf.reason || '').trim().length < 3) return toast('Tulis alasan/keterangan izin.', 'error');
+        sb.disabled = true; sb.innerHTML = '<span class="spinner"></span> Mengirim…';
+        var multi = pf.type === 'TIDAK_MASUK' || pf.type === 'SAKIT' || pf.type === 'CUTI';
+        API.call('submitPermission', { permission: {
+          name: pf.name || '', type: pf.type, from: pf.from, to: multi ? (pf.to || pf.from) : pf.from, time: multi ? '' : pf.time, reason: pf.reason,
+          attachment: pf.type === 'SAKIT' && pf.attachment ? { mime: pf.attachment.mime, data: pf.attachment.data } : null
+        } }).then(function (r) {
+          (D().permissions = D().permissions || []).push(r.permission);
+          S.pf = null; S.dirty = false;
+          toast(r.permission.status === 'APPROVED' ? 'Izin tercatat & disetujui ✓' : 'Pengajuan terkirim ✓ Menunggu persetujuan manager');
+          render();
+        }).catch(function (e) { sb.disabled = false; sb.textContent = 'Coba lagi'; handleErr(e); });
       } else if (kind === 'pin') {
         API.call('changePin', { oldPin: f.old, newPin: f.new }).then(function (res) {
           S.token = res.token; Store.set('token', res.token); form.reset(); toast('PIN berhasil diganti ✓');
@@ -1608,6 +2160,13 @@
 
   /* ---------------- START ---------------- */
   function start() {
+    setInterval(function () {
+      var els = document.querySelectorAll('[data-clock]');
+      if (!els.length || !S.data) return;
+      var t = timeInTz(serverNow());
+      for (var i = 0; i < els.length; i++) els[i].textContent = t;
+      if (t.slice(3) === '00:00' && canRerender()) render();
+    }, 1000);
     indexYT();
     bindEvents();
     render();

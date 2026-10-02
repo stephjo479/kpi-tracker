@@ -444,3 +444,60 @@ th.sortable:hover { color: var(--text); }
 .pin-eye { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); border: 0; background: none; color: var(--muted); padding: 8px; cursor: pointer; border-radius: 8px; }
 .pin-eye:hover { color: var(--text); background: var(--surface-2); }
 .pin-eye svg { width: 20px; height: 20px; display: block; }
+
+/* ========================= ABSENSI ========================= */
+.presence { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; border-left: 4px solid var(--accent); }
+.presence.presence-late { border-left-color: var(--critical); background: linear-gradient(90deg, var(--critical-soft), var(--surface) 60%); }
+.presence-clock { min-width: 120px; }
+.presence-clock .clock { font-size: 30px; font-weight: 800; letter-spacing: -.02em; line-height: 1.1; }
+.count-badge { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--critical); color: #fff; font-size: 11px; font-weight: 800; margin-left: 4px; }
+.upload-box { display: block; border: 2px dashed var(--border-strong); border-radius: 14px; padding: 18px; text-align: center; cursor: pointer; color: var(--text-2); }
+.upload-box:hover { border-color: var(--accent); background: var(--accent-soft); }
+.upload-box input { display: none; }
+.upload-box > span { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.upload-box svg { width: 24px; height: 24px; }
+.attach-preview { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.attach-preview img { max-width: 220px; max-height: 220px; border-radius: 12px; border: 1px solid var(--border); object-fit: contain; background: #fff; }
+.attach-full { width: 100%; height: auto; border-radius: 12px; background: #fff; }
+
+/* ---------- Popup komik "TELAT!" ---------- */
+.comic-backdrop {
+  position: fixed; inset: 0; z-index: 300; display: grid; place-items: center; padding: 20px;
+  background: radial-gradient(circle, rgba(0,0,0,.35) 1.5px, transparent 1.6px) 0 0 / 10px 10px, rgba(20, 10, 30, .55);
+  animation: fade .15s ease;
+}
+.comic-backdrop.out { opacity: 0; transition: opacity .2s; }
+.comic {
+  position: relative; width: 100%; max-width: 380px; padding: 26px 22px 22px; text-align: center; color: #111;
+  background: #fff7c2; border: 5px solid #111; border-radius: 10px; box-shadow: 10px 10px 0 #111;
+  font-family: 'Bangers', 'Comic Sans MS', 'Plus Jakarta Sans', system-ui, sans-serif; letter-spacing: .03em;
+  background-image: radial-gradient(circle, rgba(240, 120, 40, .22) 2px, transparent 2.2px); background-size: 12px 12px;
+  animation: comic-pop .5s cubic-bezier(.2, 1.6, .4, 1) both, comic-shake .45s .45s ease-in-out;
+}
+.comic.ok { background-color: #dcfce7; background-image: radial-gradient(circle, rgba(34, 160, 80, .2) 2px, transparent 2.2px); }
+.comic-burst { position: relative; width: 210px; height: 150px; margin: -6px auto 4px; display: grid; place-items: center; }
+.comic-burst svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.comic-burst polygon { fill: #ff3b30; stroke: #111; stroke-width: 6; stroke-linejoin: round; }
+.comic.ok .comic-burst polygon { fill: #f59e0b; }
+.comic-burst span { position: relative; font-size: 54px; color: #fff200; -webkit-text-stroke: 3px #111; paint-order: stroke fill; text-shadow: 4px 4px 0 #111; transform: rotate(-6deg); }
+.comic-bubble {
+  position: relative; display: inline-block; max-width: 100%; margin: 6px auto 12px; padding: 12px 18px; background: #fff; border: 4px solid #111;
+  border-radius: 22px; box-shadow: 5px 5px 0 #111; transform: rotate(2deg);
+}
+.comic-bubble::after { content: ''; position: absolute; top: -20px; left: 40px; border: 10px solid transparent; border-bottom: 14px solid #111; }
+.comic-fine { font-size: 40px; line-height: .95; color: #e11d48; -webkit-text-stroke: 1.5px #111; }
+.comic.ok .comic-fine { color: #16a34a; }
+.comic-note { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; font-size: 13px; font-weight: 700; letter-spacing: 0; margin-top: 6px; color: #333; }
+.comic-sub { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; font-size: 13px; font-weight: 800; letter-spacing: 0; margin-bottom: 14px; }
+.comic-sfx { position: absolute; font-size: 26px; color: #fff; -webkit-text-stroke: 2px #111; paint-order: stroke fill; text-shadow: 3px 3px 0 #111; }
+.comic-sfx.s1 { top: -22px; left: -14px; transform: rotate(-14deg); color: #38bdf8; }
+.comic-sfx.s2 { bottom: 64px; right: -18px; transform: rotate(12deg); color: #a3e635; }
+.comic-btn {
+  font-family: 'Bangers', 'Plus Jakarta Sans', system-ui, sans-serif; font-size: 22px; letter-spacing: .05em; cursor: pointer; color: #111;
+  background: #ffd60a; border: 4px solid #111; border-radius: 12px; padding: 8px 18px; box-shadow: 5px 5px 0 #111; transition: transform .08s, box-shadow .08s;
+}
+.comic-btn:hover { transform: translate(-1px, -1px); box-shadow: 6px 6px 0 #111; }
+.comic-btn:active { transform: translate(4px, 4px); box-shadow: 1px 1px 0 #111; }
+@keyframes comic-pop { 0% { transform: scale(.2) rotate(-12deg); opacity: 0; } 100% { transform: scale(1) rotate(0); opacity: 1; } }
+@keyframes comic-shake { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-8px) rotate(-1deg); } 40% { transform: translateX(8px) rotate(1deg); } 60% { transform: translateX(-5px); } 80% { transform: translateX(5px); } }
+@media (prefers-reduced-motion: reduce) { .comic { animation: none; } }

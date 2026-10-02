@@ -117,6 +117,18 @@ Semuanya bisa diubah di **Admin → Pengaturan** (atau sheet `CONFIG`). Nilai aw
 | `BACKDATE_DAYS` | `3` | Batas isi/ubah laporan mundur bagi karyawan |
 | `YT_SYNC_HOURS` | `3` | Sinkron views tiap 3 jam |
 
+## Absensi (versi 1.3.0)
+
+> Langkah memasang update ada di **[PANDUAN-UPDATE.md](PANDUAN-UPDATE.md)**.
+
+- Presensi masuk/pulang di **Beranda** atau menu **Absensi**. Jam memakai **jam server** (zona `TIMEZONE`).
+- Jam kerja `WORK_START` 09:00 – `WORK_END` 17:00. Terlambat → popup komik **"DENDA Rp 10.000"** (`LATE_FINE`).
+- Pulang lewat 17:00 → isian lembur (**untuk apa** + **atas perintah siapa**). Pulang sebelum 17:00 → alasan pulang awal.
+- Izin: terlambat, tidak masuk, sakit (+ foto surat dokter opsional, disimpan privat di Google Drive pemilik), cuti, pulang awal. Disetujui oleh admin (manager). Izin milik sendiri harus disetujui admin lain.
+- Wajib absen: semua akun aktif yang bisa login, **kecuali POSITION = BOSS**.
+- Masuk KPI: `WEIGHT_ATTENDANCE` (awal 20%). Tepat waktu 100%, terlambat `ATTENDANCE_LATE_SCORE` (50%), alpa 0%. Izin/sakit/cuti yang disetujui tidak dihitung (target hari itu juga dihapus).
+- Sheet: `ATTENDANCE` (1 baris per orang per hari), `IZIN` (pengajuan & status), `REKAP ABSENSI` (rekap bulan ini & bulan lalu, otomatis tiap jam).
+
 ## Gaji & pengingat (khusus admin: Arya & Zul)
 
 - **Gaji staff** dibaca dari kolom `SALARY` + `DATE OF SALARY` di `CHANNEL REPORT`.

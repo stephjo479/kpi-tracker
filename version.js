@@ -3,12 +3,12 @@
  * Setiap kali kamu mengubah file aplikasi (html/css/js), naikkan APP_VERSION
  * dan tulis catatannya. Perangkat karyawan akan melihat tombol "Perbarui".
  */
-var APP_VERSION = '1.2.0';
+var APP_VERSION = '1.3.0';
 var APP_RELEASE_DATE = '2026-10-02';
 var APP_RELEASE_NOTES = [
-  'Halaman baru "Struktur Tim": Bos, Manager, dan anggota tiap divisi beserta channelnya.',
-  'Jabatan Bos / Manager / Staff tampil di seluruh aplikasi. Manager & Bos tidak masuk peringkat KPI.',
-  'Admin: halaman Gaji baru (batch tgl 10 & 23, gaji manager, biaya sewa) + pengingat H-5 lewat email & notifikasi.',
-  'Channel bisa punya durasi minimal video (misal 60 menit untuk playlist); video yang kurang ditandai.',
-  'Login lebih andal: PIN bisa ditampilkan, pesan kesalahan lebih jelas.'
+  'Fitur baru ABSENSI: presensi masuk & pulang (jam 09.00–17.00 WIB, memakai jam server).',
+  'Terlambat? Muncul popup "DENDA Rp 10.000" ala komik 💥. Rekap denda per bulan.',
+  'Pengajuan izin: terlambat, tidak masuk, sakit (bisa lampirkan foto surat dokter), cuti, pulang awal. Disetujui oleh manager.',
+  'Lembur: saat presensi pulang lewat jam 17.00, isi keterangan lembur untuk apa & atas perintah siapa.',
+  'Kehadiran kini masuk ke skor KPI (bobot bisa diatur). Rekap bulanan untuk evaluasi.'
 ];
