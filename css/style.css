@@ -594,3 +594,5 @@ details[open] > summary::before { content: '▾ '; }
 html[lang="ko"] body { word-break: keep-all; overflow-wrap: break-word; }
 /* ikon di judul kartu selalu kecil (juga di layar HP) */
 h2 > svg, h3 > svg { width: 18px; height: 18px; flex-shrink: 0; }
+/* 1.7: presensi masuk cukup foto */
+.ci-single { max-width: 560px; margin: 0 auto; }

@@ -3,9 +3,10 @@
  * Setiap kali kamu mengubah file aplikasi (html/css/js), naikkan APP_VERSION
  * dan tulis catatannya. Perangkat karyawan akan melihat tombol "Perbarui".
  */
-var APP_VERSION = '1.6.2';
-var APP_RELEASE_DATE = '2026-10-07';
+var APP_VERSION = '1.7.0';
+var APP_RELEASE_DATE = '2026-10-09';
 var APP_RELEASE_NOTES = [
+  'Absen masuk cukup foto. To-do hari ini ditulis sesudah absen (tombol "Tulis to-do hari ini") dan bisa diubah sampai presensi pulang.',
   'Keamanan: daftar nama karyawan tidak lagi tampil untuk orang luar — ketik namamu sekali di halaman login, perangkat akan mengingatnya. PIN admin & pimpinan minimal 6 digit.',
   'Perbaikan: pengaturan admin selalu gagal disimpan & cek lokasi kantor tidak aktif (jam/tanggal di sheet CONFIG berubah format). Sekarang tersimpan sebagai teks dan ada status "Cek lokasi AKTIF".',
   'Pilihan bahasa: Indonesia, English, dan 한국어 (Korea). Bisa diganti di halaman login, menu samping, atau Pengaturan.',

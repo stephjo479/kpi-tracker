@@ -1226,8 +1226,11 @@
         '<div class="small text-2">Masuk ' + t5(rec.in) + ' · Pulang ' + t5(rec.out) + (rec.otMin ? ' · Lembur ' + durTxt(rec.otMin) : '') + '</div>';
     } else if (rec && rec.in) {
       var st = dayStatus(me, t);
-      state = '<div class="bold row wrap" style="gap:8px">Masuk ' + t5(rec.in) + ' ' + statusBadgeAtt(st) + '</div><div class="small text-2">Jam pulang ' + hm(c.workEnd) + ' ' + tzLabel() + '. ' + (rec.todoCount ? rec.todoCount + ' to-do hari ini. ' : '') + 'Saat pulang, isi laporan progres.</div>';
-      btn = '<button class="btn" data-act="check-out">' + icon('logout') + 'Presensi pulang & laporan</button>';
+      state = '<div class="bold row wrap" style="gap:8px">Masuk ' + t5(rec.in) + ' ' + statusBadgeAtt(st) + '</div><div class="small text-2">Jam pulang ' + hm(c.workEnd) + ' ' + tzLabel() + '. ' + (rec.todoCount ? rec.todoCount + ' to-do hari ini. ' : '') + 'Saat pulang, isi laporan progres.</div>' +
+        (rec.todoCount ? '' : '<div class="small down bold">📝 Belum menulis to-do hari ini.</div>');
+      btn = (rec.todoCount ? '<button class="btn ghost" data-act="edit-todo">' + icon('edit') + 'Ubah to-do (' + rec.todoCount + ')</button>'
+          : '<button class="btn" data-act="edit-todo">' + icon('plus') + 'Tulis to-do hari ini</button>') +
+        '<button class="btn' + (rec.todoCount ? '' : ' ghost') + '" data-act="check-out">' + icon('logout') + 'Presensi pulang & laporan</button>';
     } else {
       var lateNow = work && !ex && nm > c.workStart + c.lateGrace;
       state = '<div class="bold">' + (ex ? esc(PERM[ex.type].label) + ' (disetujui)' : 'Belum presensi masuk') + '</div>' +
@@ -1264,7 +1267,7 @@
       '<button class="comic-btn" type="button">' + (excused ? 'Oke, lanjut kerja! 💪' : 'Siap, besok lebih pagi! 🙏') + '</button></div>';
     document.body.appendChild(host);
     function onKey(e) { if (e.key === 'Escape') close(); }
-    function close() { document.removeEventListener('keydown', onKey); host.classList.add('out'); setTimeout(function () { host.remove(); }, 220); }
+    function close() { document.removeEventListener('keydown', onKey); host.classList.add('out'); setTimeout(function () { host.remove(); if (o.onClose) o.onClose(); }, 220); }
     host.querySelector('.comic-btn').onclick = close;
     host.addEventListener('click', function (e) { if (e.target === host) close(); });
     document.addEventListener('keydown', onKey);
@@ -1345,32 +1348,29 @@
   function ciTodoClean() { return S.ci.todo.map(function (t) { return { text: String(t.text || '').trim(), channel: t.channel || '' }; }).filter(function (t) { return t.text.length >= 2; }); }
   function updateCiSubmit(m) {
     var b = $('#ci-submit', m); if (!b) return;
-    var okPhoto = !!S.ci.photo, okTodo = ciTodoClean().length > 0;
+    var okPhoto = !!S.ci.photo, okTodo = true;
     var g = geoCfgC(), ev = geoEval(S.ci.geo), geoBusy = g.active && S.ci.geoState === 'loading', okGeo = !g.active || (ev.ok && !geoBusy);
     b.disabled = !(okPhoto && okTodo && okGeo);
     $('#ci-hint', m).textContent = !okPhoto ? 'Ambil foto dulu.' : !okTodo ? 'Tulis minimal 1 to-do.' : geoBusy ? 'Menunggu lokasi…' : !okGeo ? (ev.state === 'out' ? 'Di luar area kantor.' : 'Lokasi belum didapat.') : 'Siap dikirim.';
   }
   function checkInFlow() {
-    S.ci = { todo: [{ text: '', channel: '' }], photo: null, facing: S.ciFacing || 'user', stream: null, geo: null, geoState: 'idle', geoErr: 0 };
+    S.ci = { todo: [], photo: null, facing: S.ciFacing || 'user', stream: null, geo: null, geoState: 'idle', geoErr: 0 };
     var c = attCfg(), nm = nowMin(), work = KPI.isWorkday(today(), c);
     var lateNow = work && nm > c.workStart + c.lateGrace;
     openModal({
       title: 'Presensi masuk', wide: true,
       body: (lateNow ? '<div class="notice warn small mb">Sudah lewat jam ' + hm(c.workStart) + ' ' + tzLabel() + '. Presensi sekarang akan tercatat <b>terlambat</b>.</div>' : '') +
-        '<div class="ci-grid"><div><div class="ci-cam"><video id="ci-video" autoplay playsinline muted></video><img id="ci-shot" class="hidden" alt="Foto presensi"><div class="ci-msg" id="ci-msg">Menyalakan kamera…</div></div>' +
+        '<div class="ci-single"><div><div class="ci-cam"><video id="ci-video" autoplay playsinline muted></video><img id="ci-shot" class="hidden" alt="Foto presensi"><div class="ci-msg" id="ci-msg">Menyalakan kamera…</div></div>' +
         '<div class="row wrap mt-sm"><button type="button" class="btn" id="ci-snap" disabled>' + icon('eye') + 'Ambil foto</button>' +
         '<button type="button" class="btn ghost hidden" id="ci-retake">' + icon('refresh') + 'Ulangi foto</button>' +
         '<button type="button" class="btn ghost" id="ci-flip">' + icon('refresh') + 'Ganti kamera</button>' +
         '<button type="button" class="btn ghost hidden" id="ci-retry">Coba lagi</button></div>' +
         '<div id="ci-geo" class="ci-geo hidden"></div>' +
         '<div class="xs muted mt-sm">' + icon('lock').replace('<svg ', '<svg width="12" height="12" style="vertical-align:-1px" ') + ' Foto wajib diambil langsung dari kamera (tidak bisa dari galeri) sebagai bukti kedatangan. Hanya admin yang bisa melihat foto ini.</div></div>' +
-        '<div><h3 class="mb">To-do / pekerjaan hari ini</h3><div id="ci-todo"></div>' +
-        '<button type="button" class="btn ghost sm mt-sm" id="ci-add">' + icon('plus') + 'Tambah pekerjaan</button>' +
-        '<div class="xs muted mt-sm">Saat presensi pulang, kamu akan mengisi progres setiap pekerjaan ini.</div></div></div>',
+        '</div>',
       foot: '<span class="xs muted grow" id="ci-hint">Ambil foto dulu.</span><button class="btn ghost" data-act="modal-close">Batal</button><button class="btn" id="ci-submit" disabled>' + icon('check') + 'Kirim presensi</button>',
       onClose: function () { stopCamera(); S.ci = null; },
       mount: function (m) {
-        renderTodoEditor(m);
         startCamera(m);
         getCiGeo(m);
         $('#ci-snap', m).onclick = function () { snapPhoto(m); };
@@ -1383,20 +1383,47 @@
         };
         $('#ci-flip', m).onclick = function () { S.ci.facing = S.ciFacing = S.ci.facing === 'user' ? 'environment' : 'user'; $('#ci-snap', m).disabled = true; startCamera(m); };
         $('#ci-retry', m).onclick = function () { this.classList.add('hidden'); startCamera(m); };
-        $('#ci-add', m).onclick = function () { S.ci.todo.push({ text: '', channel: '' }); renderTodoEditor(m); var l = $$('[data-ti]', m); if (l.length) l[l.length - 1].focus(); };
         $('#ci-submit', m).onclick = function () {
-          var btn = this, todo = ciTodoClean();
+          var btn = this;
           if (!S.ci.photo) return toast('Ambil foto dulu.', 'error');
-          if (!todo.length) return toast('Tulis minimal 1 to-do.', 'error');
           if (!geoEval(S.ci.geo).ok) return toast('Presensi masuk hanya bisa di kantor.', 'error');
           btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Mengirim…';
-          API.call('checkIn', { photo: { mime: S.ci.photo.mime, data: S.ci.photo.data }, todo: todo, geo: S.ci.geo || null }).then(function (r) {
+          API.call('checkIn', { photo: { mime: S.ci.photo.mime, data: S.ci.photo.data }, geo: S.ci.geo || null }).then(function (r) {
             upsertAtt(r.record); syncClock(r.serverTime); closeModal(); render();
             if (r.already) return toast('Kamu sudah presensi masuk jam ' + t5(r.record.in) + '.');
-            if (r.late) comicPopup({ lateMin: r.lateMin, inTime: r.record.in, fine: r.fine || attCfg().lateFine, permission: r.latePermission });
-            else toast(r.workday ? 'Presensi masuk ' + t5(r.record.in) + ' · Tepat waktu 👍' : 'Presensi masuk ' + t5(r.record.in) + ' (hari libur)');
+            var askTodo = function () { if (!(r.record.todoCount || (r.record.todo || []).length)) setTimeout(todoModal, 300); };
+            if (r.late) comicPopup({ lateMin: r.lateMin, inTime: r.record.in, fine: r.fine || attCfg().lateFine, permission: r.latePermission, onClose: askTodo });
+            else { askTodo(); toast(r.workday ? 'Presensi masuk ' + t5(r.record.in) + ' · Tepat waktu 👍' : 'Presensi masuk ' + t5(r.record.in) + ' (hari libur)'); }
             if (r.geo && r.geo.status === 'OUT') setTimeout(function () { toast('Tercatat di luar area kantor (±' + fmtDist(r.geo.dist || 0) + ').', 'error'); }, 900);
           }).catch(function (e) { btn.disabled = false; btn.innerHTML = icon('check') + 'Kirim presensi'; handleErr(e); });
+        };
+      }
+    });
+  }
+
+  /* ---------- To-do hari ini (ditulis sesudah presensi masuk) ---------- */
+  function todoModal() {
+    var rec = attOf(S.user.name, today());
+    if (!rec || !rec.in) return toast('Presensi masuk dulu, baru tulis to-do hari ini.', 'error');
+    if (rec.out) return toast('Kamu sudah presensi pulang. To-do hari ini tidak bisa diubah lagi.', 'error');
+    var cur = (rec.todo || []).map(function (t) { return { text: t.text, channel: t.channel || '' }; });
+    S.ci = { todo: cur.length ? cur : [{ text: '', channel: '' }, { text: '', channel: '' }] };
+    openModal({
+      title: '📝 To-do hari ini',
+      body: '<div class="small text-2 mb">Tulis pekerjaan yang akan kamu kerjakan hari ini. Bisa ditambah atau diubah kapan saja sampai presensi pulang. Saat pulang, kamu mengisi progres setiap pekerjaan ini.</div>' +
+        '<div id="ci-todo"></div><button type="button" class="btn ghost sm mt-sm" id="ci-add">' + icon('plus') + 'Tambah pekerjaan</button>',
+      foot: '<button class="btn ghost" data-act="modal-close">Nanti</button><button class="btn" id="td-ok">' + icon('check') + 'Simpan to-do</button>',
+      onClose: function () { S.ci = null; },
+      mount: function (m) {
+        renderTodoEditor(m);
+        $('#ci-add', m).onclick = function () { S.ci.todo.push({ text: '', channel: '' }); renderTodoEditor(m); var l = $$('[data-ti]', m); if (l.length) l[l.length - 1].focus(); };
+        $('#td-ok', m).onclick = function () {
+          var b = this, todo = ciTodoClean();
+          if (!todo.length) return toast('Tulis minimal 1 to-do.', 'error');
+          b.disabled = true;
+          API.call('saveTodo', { todo: todo }).then(function (r) {
+            upsertAtt(r.record); closeModal(); toast('To-do tersimpan ✓ (' + todo.length + ' pekerjaan)'); render();
+          }).catch(function (e) { b.disabled = false; handleErr(e); });
         };
       }
     });
@@ -2489,6 +2516,7 @@
     'edit-channel': function (el) { channelModal(el.dataset.key); },
     'check-in': function () { checkInFlow(); },
     'check-out': function () { checkOutFlow(); },
+    'edit-todo': function () { todoModal(); },
     'att-detail': function (el) { attDetailModal(el.dataset.name, el.dataset.date); },
     'att-tab': function (el, ev) { if (ev) ev.preventDefault(); S.attTab = el.dataset.v; if (route().name !== 'attendance') go('attendance'); else render(); },
     'pf-type': function (el) { S.pf.type = el.dataset.v; if (S.pf.type !== 'SAKIT') S.pf.attachment = null; render(); },

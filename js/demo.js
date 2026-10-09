@@ -322,7 +322,6 @@ var Demo = (function () {
       if (!ex) {
         if (!b.photo || !b.photo.data) throw new Error('Foto kedatangan wajib diambil langsung dari kamera.');
         var todo = (b.todo || []).filter(function (t) { return String(t.text || '').trim().length >= 2; });
-        if (!todo.length) throw new Error('Tulis minimal 1 to-do / pekerjaan yang akan dikerjakan hari ini.');
         var g = geoCheck(u, b.geo, n.date);
         ex = { date: n.date, name: u.name, in: n.time, out: '', lateMin: work ? Math.max(0, n.min - 540) : 0, otMin: 0, otFor: '', otBy: '', early: '', notes: '', updatedBy: u.name, _photo: b.photo.data, todo: todo, report: null, completion: '', geo: g.geo, dist: g.dist };
         list.push(ex);
@@ -369,6 +368,17 @@ var Demo = (function () {
       var d = load(); d.permissions = (d.permissions || []).filter(function (x) { return !(x.id === b.id && (x.name === u.name || u.role === 'ADMIN')); }); save(); return { ok: true };
     },
     getAudit: function () { return { rows: [] }; },
+    saveTodo: function (b, u) {
+      var d = load(), n = nowJkt();
+      var ex = (d.attendance || []).filter(function (a) { return a.name === u.name && a.date === n.date; })[0];
+      if (!ex || !ex.in) throw new Error('Presensi masuk dulu, baru tulis to-do hari ini.');
+      if (ex.out) throw new Error('Kamu sudah presensi pulang. To-do hari ini tidak bisa diubah lagi.');
+      var todo = (b.todo || []).filter(function (t) { return String(t.text || '').trim().length >= 2; }).slice(0, 25);
+      if (!todo.length) throw new Error('Tulis minimal 1 to-do / pekerjaan yang akan dikerjakan hari ini.');
+      ex.todo = todo; save();
+      var pub = Object.assign({}, ex, { hasPhoto: !!ex._photo, todoCount: todo.length }); delete pub._photo;
+      return { record: pub };
+    },
     setLang: function (b, u) { if (!/^(id|en|ko)$/.test(String(b.lang))) throw new Error('Bahasa tidak dikenal.'); u.lang = b.lang; save(); return { lang: b.lang }; },
     getAttendancePhoto: function (b, u) {
       if (u.role !== 'ADMIN' && u.role !== 'VIEWER') throw new Error('Foto absensi hanya bisa dilihat admin & pimpinan.');
