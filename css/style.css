@@ -596,3 +596,37 @@ html[lang="ko"] body { word-break: keep-all; overflow-wrap: break-word; }
 h2 > svg, h3 > svg { width: 18px; height: 18px; flex-shrink: 0; }
 /* 1.7: presensi masuk cukup foto */
 .ci-single { max-width: 560px; margin: 0 auto; }
+/* 1.8: pembagian tugas di dalam channel */
+.mem-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 2px; }
+.mem-chip { background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); font-weight: 600; max-width: 100%; }
+.mem-chip > span { overflow: hidden; text-overflow: ellipsis; }
+.mem-chip .mem-label { font-weight: 500; color: var(--muted); }
+.mem-chip .mem-label::before { content: "·"; margin: 0 4px 0 0; }
+.mem-chip.prog { background: var(--accent-soft); color: var(--accent-text); border-color: transparent; }
+.mem-chip.prog .mem-label { color: var(--accent-text); opacity: .85; }
+.mem-chip.me { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.mem-label-inline { color: var(--muted); }
+.team-list { display: flex; flex-direction: column; }
+.team-row { display: flex; gap: 12px; align-items: flex-start; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.team-row:last-child { border-bottom: 0; }
+.team-stats { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: flex-end; margin-top: 8px; }
+.team-bar { min-width: 120px; }
+.team-edit { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; background: var(--surface-2); }
+.team-edit-grid { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.3fr) minmax(0, .8fr); gap: 0 10px; margin-top: 8px; }
+.team-edit-grid .field { margin-bottom: 4px; }
+.proj-log { margin-top: 8px; }
+.proj-log > summary { cursor: pointer; color: var(--text-2); }
+.proj-log-row { display: flex; gap: 10px; align-items: baseline; padding: 5px 0; border-bottom: 1px dashed var(--border); flex-wrap: wrap; }
+.proj-log-row:last-child { border-bottom: 0; }
+@media (max-width: 640px) {
+  .team-edit-grid { grid-template-columns: minmax(0, 1fr); }
+  .team-stats > div { min-width: 0; }
+  .team-bar { flex-basis: 100%; }
+}
+/* 1.9: detail kerja (generate & editing) */
+.det-box { border: 1px dashed var(--border-strong, var(--border)); border-radius: 12px; padding: 10px 12px; }
+.det-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 8px; }
+.det-label { font-size: 13px; color: var(--text-2); }
+.out-detail { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding-top: 4px; }
+.out-detail .stepper input { min-width: 0; }
+.out-grp { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }

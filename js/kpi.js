@@ -21,6 +21,17 @@
  *     Capaian = unit didapat ÷ target. Hari tanpa proyek (tidak ada permintaan client) tidak dihitung.
  *   Data sebelum GO_LIVE_DATE (masa uji coba) tidak dihitung.
  *
+ *   PEMBAGIAN TUGAS DI DALAM CHANNEL (1.8) — satu channel bisa dipegang beberapa orang dengan pekerjaan berbeda
+ *   (mis. Ava = Shorts, Agista = AI Drama long-form). Tiap orang punya jenis video, cara hitung (COUNT / PROGRESS)
+ *   dan target sendiri (sheet TIM CHANNEL). Tanpa pengaturan: semua ikut KPI MODE channel & TARGET dibagi rata.
+ *   Orang ber-mode PROGRESS mendapat target 1 unit per hari kerja selama punya proyek aktif (dibagi rata
+ *   bila ia punya proyek aktif di beberapa channel pada hari yang sama).
+ *
+ *   TUGAS KHUSUS DI LUAR CHANNEL (1.9) — dibuat admin per karyawan (sheet TUGAS KARYAWAN), mis. riset:
+ *     - Cara ukur PROGRESS: 100% dibagi rata ke hari kerja dari MULAI s/d DEADLINE. Capaian = kenaikan progres ÷ progres yang diharapkan.
+ *     - Cara ukur COUNT   : target jumlah per hari kerja (mulai s/d deadline / selesai). Ikut dihitung seperti output channel.
+ *     Tugas yang dihentikan / selesai tidak memberi target lagi sesudah tanggal berakhirnya.
+ *
  *   KPI HASIL CHANNEL (outcome) — hanya untuk channel yang diberi TARGET VIEWS / BULAN dan/atau TARGET SUBS / BULAN:
  *     Pertumbuhan = selisih total views/subscriber channel (snapshot harian YouTube) selama periode.
  *     Target periode = target bulanan × jumlah hari yang tercakup ÷ jumlah hari dalam bulan.
@@ -78,6 +89,29 @@ var KPI = (function () {
     if (cfg.targetPeriod === 'WEEKLY') return target / Math.max(1, cfg.workDays.length);
     if (cfg.targetPeriod === 'MONTHLY') return target / Math.max(1, workdays(monthStart(date), monthEnd(date), cfg));
     return target;
+  }
+
+  /**
+   * Anggota channel + pembagian tugasnya: [{ name, label, mode: 'COUNT'|'PROGRESS', target (mode COUNT, per TARGET_PERIOD) }]
+   * c.members (dari sheet TIM CHANNEL) boleh sebagian / kosong. Yang tidak diatur → ikut KPI MODE channel,
+   * dan sisa TARGET channel dibagi rata ke anggota COUNT yang targetnya tidak diatur.
+   */
+  function channelMembers(c) {
+    if (!c) return [];
+    var given = {};
+    (c.members || []).forEach(function (m) { if (m && up(m.name)) given[up(m.name)] = m; });
+    var chMode = up(c.kpiMode) === 'PROGRESS' ? 'PROGRESS' : 'COUNT', seen = {};
+    var list = (c.employees || []).map(up).filter(function (n) { if (!n || seen[n]) return false; seen[n] = 1; return true; }).map(function (n) {
+      var g = given[n] || {}, gm = up(g.mode);
+      var mode = gm === 'PROGRESS' || gm === 'COUNT' ? gm : chMode;
+      var t = g.target === '' || g.target == null || !isFinite(Number(g.target)) ? null : Math.max(0, Number(g.target));
+      return { name: n, label: String(g.label || '').trim(), mode: mode, target: mode === 'COUNT' ? t : null, notes: String(g.notes || ''), custom: !!given[n] };
+    });
+    var cnt = list.filter(function (m) { return m.mode === 'COUNT'; });
+    var free = cnt.filter(function (m) { return m.target == null; });
+    var rest = Math.max(0, (Number(c.target) || 0) - cnt.reduce(function (s, m) { return s + (m.target || 0); }, 0));
+    free.forEach(function (m) { m.target = rest / free.length; });
+    return list;
   }
 
   function periodRange(kind, today) {
@@ -250,17 +284,34 @@ var KPI = (function () {
     var proj = {};
     (opts.projects || []).forEach(function (p) {
       var n = up(p.employee); if (!n || !p.created) return;
-      (proj[n] = proj[n] || []).push({ start: String(p.created).slice(0, 10), end: p.end ? String(p.end).slice(0, 10) : '9999-12-31' });
+      (proj[n] = proj[n] || []).push({ start: String(p.created).slice(0, 10), end: p.end ? String(p.end).slice(0, 10) : '9999-12-31', channel: String(p.channel || '') });
     });
-    function hasActiveProject(n, d) { return (proj[n] || []).some(function (x) { return x.start <= d && x.end >= d; }); }
+    function hasActiveProject(n, d, key) { return (proj[n] || []).some(function (x) { return x.start <= d && x.end >= d && (key == null || x.channel === key); }); }
     function isProg(c) { return !!c && up(c.kpiMode) === 'PROGRESS'; }
+
+    // Pembagian tugas per orang di dalam channel
+    var memMode = {}, progKeys = {};
+    (opts.channels || []).forEach(function (c) {
+      channelMembers(c).forEach(function (m) {
+        (memMode[m.name] = memMode[m.name] || {})[c.key] = m.mode;
+        if (m.mode === 'PROGRESS') (progKeys[m.name] = progKeys[m.name] || []).push(c.key);
+      });
+    });
+    function isProgFor(name, key) { var x = memMode[up(name)]; return x && x[key] ? x[key] === 'PROGRESS' : isProg(chByKey[key]); }
+    /** Channel PROGRESS milik orang ini yang punya proyek aktif pada hari d. */
+    function activeProgKeys(n, d) {
+      var keys = progKeys[n] || [];
+      var act = keys.filter(function (k) { return hasActiveProject(n, d, k); });
+      if (!act.length && keys.length && hasActiveProject(n, d)) act = [keys[0]];
+      return act;
+    }
 
     function emp(name) {
       var k = up(name);
       if (!k || excluded[k]) return null;
       if (!emps[k]) {
         var ex = (P[k] || {}).excused || {};
-        emps[k] = { name: k, channels: {}, target: 0, actual: 0, progTarget: 0, progActual: 0, nCount: 0, nProg: 0, reportDays: {}, daily: {}, divisions: {}, days: days.filter(function (d) { return !ex[d]; }), excused: days.length - days.filter(function (d) { return !ex[d]; }).length };
+        emps[k] = { name: k, channels: {}, target: 0, actual: 0, progTarget: 0, progActual: 0, taskTarget: 0, taskActual: 0, nCount: 0, nProg: 0, nTask: 0, reportDays: {}, daily: {}, divisions: {}, days: days.filter(function (d) { return !ex[d]; }), excused: days.length - days.filter(function (d) { return !ex[d]; }).length };
         order.push(k);
       }
       return emps[k];
@@ -268,7 +319,7 @@ var KPI = (function () {
     function chRow(e, key) {
       if (!e.channels[key]) {
         var c = chByKey[key] || { key: key, name: key, division: 'OTHER' };
-        e.channels[key] = { key: key, name: c.name, division: c.division, target: 0, actual: 0, assigned: false, mode: isProg(c) ? 'PROGRESS' : 'COUNT' };
+        e.channels[key] = { key: key, name: c.name, division: c.division, target: 0, actual: 0, assigned: false, mode: isProgFor(e.name, key) ? 'PROGRESS' : 'COUNT', label: '' };
       }
       return e.channels[key];
     }
@@ -279,18 +330,17 @@ var KPI = (function () {
     });
 
     (opts.channels || []).forEach(function (c) {
-      var names = (c.employees || []).filter(function (n) { return up(n); });
-      if (!names.length) return;
-      names.forEach(function (n) {
-        var e = emp(n); if (!e) return;
+      channelMembers(c).forEach(function (m) {
+        var e = emp(m.name); if (!e) return;
         var row = chRow(e, c.key);
-        row.assigned = true;
+        row.assigned = true; row.mode = m.mode; row.label = m.label;
         e.divisions[c.division] = true;
-        if (isProg(c)) {
+        if (m.mode === 'PROGRESS') {
           e.nProg++;
           e.days.forEach(function (d) {
-            if (!hasActiveProject(e.name, d)) return;
-            var t = 1 / names.length;
+            var act = activeProgKeys(e.name, d);
+            if (act.indexOf(c.key) < 0) return;
+            var t = 1 / act.length;
             row.target += t; e.progTarget += t;
             if (!e.daily[d]) e.daily[d] = { t: 0, a: 0 };
             e.daily[d].t += t;
@@ -299,7 +349,7 @@ var KPI = (function () {
         }
         e.nCount++;
         e.days.forEach(function (d) {
-          var t = dailyTarget(c.target, d, cfg) / names.length;
+          var t = dailyTarget(m.target, d, cfg);
           row.target += t; e.target += t;
           if (!e.daily[d]) e.daily[d] = { t: 0, a: 0 };
           e.daily[d].t += t;
@@ -307,12 +357,46 @@ var KPI = (function () {
       });
     });
 
+    // Tugas khusus di luar channel (1.9)
+    var taskRow = {};
+    (opts.tasks || []).forEach(function (t) {
+      if (!t || !t.id || !t.start) return;
+      var e = emp(t.employee); if (!e) return;
+      var start = String(t.start).slice(0, 10), end = t.end ? String(t.end).slice(0, 10) : '9999-12-31', dl = t.deadline ? String(t.deadline).slice(0, 10) : '';
+      if (start > effTo || end < from) return;
+      var count = up(t.mode) === 'COUNT', key = 'TASK:' + t.id;
+      var row = e.channels[key] = { key: key, name: String(t.title || ''), division: 'TASK', target: 0, actual: 0, assigned: true, mode: count ? 'COUNT' : 'TASK', label: 'Tugas khusus', task: true };
+      taskRow[t.id] = { e: e, row: row };
+      var span = !count && dl ? Math.max(1, workdays(start, dl, cfg)) : 0;
+      if (count) e.nCount++; else e.nTask++;
+      e.days.forEach(function (d) {
+        if (d < start || d > end || (dl && d > dl)) return;
+        var tt = count ? Math.max(0, Number(t.target) || 0) : (span ? 1 / span : 0);
+        if (!tt) return;
+        row.target += tt;
+        if (count) e.target += tt; else e.taskTarget += tt;
+        if (!e.daily[d]) e.daily[d] = { t: 0, a: 0 };
+        e.daily[d].t += tt;
+      });
+    });
+    (opts.taskLog || []).forEach(function (l) {
+      if (!l.date || l.date < from || l.date > effTo) return;
+      var e = emp(l.employee); if (!e) return;
+      e.reportDays[l.date] = true;
+      var x = taskRow[l.taskId]; if (!x || x.e !== e) return;
+      var v = x.row.mode === 'COUNT' ? Number(l.qty) || 0 : ((Number(l.to) || 0) - (Number(l.from) || 0)) / 100;
+      x.row.actual += v;
+      if (x.row.mode === 'COUNT') e.actual += v; else e.taskActual += v;
+      if (!e.daily[l.date]) e.daily[l.date] = { t: 0, a: 0 };
+      e.daily[l.date].a += v;
+    });
+
     (opts.reports || []).forEach(function (r) {
       if (!r.date || r.date < from || r.date > effTo) return;
       var e = emp(r.employee); if (!e) return;
       var q = Number(r.qty) || 0;
       e.reportDays[r.date] = true;
-      if (isProg(chByKey[r.channel])) return; // channel long-form dinilai dari progres, bukan jumlah
+      if (isProgFor(e.name, r.channel)) return; // pekerjaan long-form dinilai dari progres proyek, bukan jumlah
       e.actual += q;
       chRow(e, r.channel).actual += q;
       if (!e.daily[r.date]) e.daily[r.date] = { t: 0, a: 0 };
@@ -322,9 +406,10 @@ var KPI = (function () {
     (opts.progressLog || []).forEach(function (l) {
       if (!l.date || l.date < from || l.date > effTo) return;
       var e = emp(l.employee); if (!e) return;
+      e.reportDays[l.date] = true;
+      if (l.channel && !isProgFor(e.name, l.channel)) return; // tugasnya di channel ini sudah bukan mode progres
       var u = Number(l.units) || 0;
       e.progActual += u;
-      e.reportDays[l.date] = true;
       if (l.channel) chRow(e, l.channel).actual += u;
       if (!e.daily[l.date]) e.daily[l.date] = { t: 0, a: 0 };
       e.daily[l.date].a += u;
@@ -348,9 +433,16 @@ var KPI = (function () {
       var discipline = e.days.length ? reported / e.days.length : null;
       var countAch = e.target > 0 ? e.actual / e.target : null;
       var progAch = e.progTarget > 0 ? e.progActual / e.progTarget : null;
-      var achievement = countAch != null && progAch != null ? (Math.min(countAch, 1.5) * e.nCount + Math.min(progAch, 1.5) * e.nProg) / (e.nCount + e.nProg)
-        : countAch != null ? countAch : progAch;
-      var unitMode = countAch == null && (progAch != null || (e.nProg > 0 && e.nCount === 0));
+      var taskAch = e.taskTarget > 0 ? e.taskActual / e.taskTarget : null;
+      // gabungan: rata-rata berbobot (jumlah tugas per jenis), maks. 150% per jenis; satu jenis saja = apa adanya
+      var parts = [];
+      if (countAch != null) parts.push([countAch, e.nCount]);
+      if (progAch != null) parts.push([progAch, e.nProg]);
+      if (taskAch != null) parts.push([taskAch, e.nTask]);
+      var achievement = parts.length > 1 ? parts.reduce(function (s2, p) { return s2 + Math.min(p[0], 1.5) * p[1]; }, 0) / parts.reduce(function (s2, p) { return s2 + p[1]; }, 0)
+        : parts.length ? parts[0][0] : null;
+      var pctMode = countAch == null && progAch == null && taskAch != null;
+      var unitMode = !pctMode && countAch == null && (progAch != null || (e.nProg > 0 && e.nCount === 0));
       var a = null;
       if (att) {
         a = attendanceRecap({ attendance: opts.attendance, permissions: opts.permissions, from: from, to: to, today: today, config: cfg, names: [k] }).map[k];
@@ -358,9 +450,16 @@ var KPI = (function () {
       var attendance = a ? a.rate : null;
       var chans = Object.keys(e.channels).map(function (key) {
         var c = e.channels[key];
+        if (c.mode === 'TASK') {
+          // tugas progres: ditampilkan dalam persen (progres yang diharapkan vs dicapai)
+          c.achievement = c.target > 0 ? c.actual / c.target : null;
+          c.target = Math.round(c.target * 1000) / 10; c.actual = Math.round(c.actual * 1000) / 10;
+          c.outcome = null;
+          return c;
+        }
         c.target = Math.round(c.target * 100) / 100;
         c.achievement = c.target > 0 ? c.actual / c.target : null;
-        c.outcome = c.assigned ? outcomeOf(key) : null;
+        c.outcome = c.assigned && !c.task ? outcomeOf(key) : null;
         return c;
       });
       var oc = chans.filter(function (c) { return c.outcome && c.outcome.achievement != null; });
@@ -375,10 +474,11 @@ var KPI = (function () {
       return {
         name: e.name,
         divisions: Object.keys(e.divisions),
-        target: unitMode ? Math.round(e.progTarget * 100) / 100 : Math.round(e.target * 100) / 100,
-        actual: unitMode ? Math.round(e.progActual * 100) / 100 : e.actual,
-        unit: unitMode ? 'unit' : '',
+        target: unitMode ? Math.round(e.progTarget * 100) / 100 : pctMode ? Math.round(e.taskTarget * 1000) / 10 : Math.round(e.target * 100) / 100,
+        actual: unitMode ? Math.round(e.progActual * 100) / 100 : pctMode ? Math.round(e.taskActual * 1000) / 10 : e.actual,
+        unit: unitMode ? 'unit' : pctMode ? '%' : '',
         progress: e.nProg ? { target: Math.round(e.progTarget * 100) / 100, actual: Math.round(e.progActual * 100) / 100, achievement: progAch } : null,
+        task: e.nTask ? { target: Math.round(e.taskTarget * 1000) / 10, actual: Math.round(e.taskActual * 1000) / 10, achievement: taskAch } : null,
         achievement: achievement,
         workdays: e.days.length,
         excusedDays: e.excused,
@@ -423,7 +523,7 @@ var KPI = (function () {
   return {
     compute: compute, attendanceRecap: attendanceRecap, periodRange: periodRange, grade: grade, dailyTarget: dailyTarget,
     isLeader: isLeader, mustAttend: mustAttend, toMin: toMin, lateMinutes: lateMinutes, permIndex: permIndex,
-    normalizeConfig: normalizeConfig, addDays: addDays, dow: dow, workdays: workdays, channelGrowth: channelGrowth, channelOutcome: channelOutcome,
+    normalizeConfig: normalizeConfig, addDays: addDays, dow: dow, workdays: workdays, channelGrowth: channelGrowth, channelOutcome: channelOutcome, channelMembers: channelMembers,
     isWorkday: isWorkday, monthStart: monthStart, monthEnd: monthEnd, eachDay: eachDay
   };
 })();

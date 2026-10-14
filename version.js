@@ -3,15 +3,13 @@
  * Setiap kali kamu mengubah file aplikasi (html/css/js), naikkan APP_VERSION
  * dan tulis catatannya. Perangkat karyawan akan melihat tombol "Perbarui".
  */
-var APP_VERSION = '1.7.0';
-var APP_RELEASE_DATE = '2026-10-09';
+var APP_VERSION = '1.9.0';
+var APP_RELEASE_DATE = '2026-10-14';
 var APP_RELEASE_NOTES = [
-  'Absen masuk cukup foto. To-do hari ini ditulis sesudah absen (tombol "Tulis to-do hari ini") dan bisa diubah sampai presensi pulang.',
-  'Keamanan: daftar nama karyawan tidak lagi tampil untuk orang luar — ketik namamu sekali di halaman login, perangkat akan mengingatnya. PIN admin & pimpinan minimal 6 digit.',
-  'Perbaikan: pengaturan admin selalu gagal disimpan & cek lokasi kantor tidak aktif (jam/tanggal di sheet CONFIG berubah format). Sekarang tersimpan sebagai teks dan ada status "Cek lokasi AKTIF".',
-  'Pilihan bahasa: Indonesia, English, dan 한국어 (Korea). Bisa diganti di halaman login, menu samping, atau Pengaturan.',
-  'Presensi masuk memakai lokasi GPS: hanya bisa di area kantor (radius 150 m). Bekerja di luar kantor? Ajukan izin "Dinas luar / WFH".',
-  'Rapor bulanan per karyawan (KPI, kehadiran, denda, proyek) — bisa dicetak / disimpan PDF.',
-  'KPI hasil channel: target views & subscriber per bulan ikut dihitung di skor KPI.',
-  'Email ringkasan mingguan otomatis setiap Senin pagi & backup spreadsheet otomatis setiap minggu.'
+  'Laporan harian lebih detail: selain jumlah video selesai, catat juga video yang di-generate (untuk hari ini / besok) dan video yang masih diedit beserta progresnya. Hanya video selesai yang dinilai; sisanya menjadi bukti kerja di detail KPI & rapor.',
+  'Long-form AI drama (Gista) sekarang dinilai harian dari jumlah video selesai — bisa lebih dari 1 per hari — tanpa proyek per video. Long-form Kemal tetap memakai proyek.',
+  'Daftar pekerjaan per karyawan (Admin → Karyawan → Pekerjaan): tambah / lepas tugas di channel dan beri tugas khusus di luar channel (mis. riset) dengan progres % + deadline atau target jumlah per hari. Tugas khusus ikut dihitung di KPI.',
+  'Satu channel bisa dipegang beberapa orang dengan pekerjaan berbeda (mis. Ava = Shorts, Agista = AI Drama long-form). Siapa mengerjakan apa terlihat di daftar Channel, halaman channel, dan Struktur Tim.',
+  'Halaman channel kini menampilkan "Tim & pembagian tugas" (target & capaian tiap orang) dan "Proyek video channel ini" (progres, deadline, riwayat progres) — termasuk long-form Kemal.',
+  'Lebih tahan gangguan: isian laporan & presensi pulang tersimpan otomatis bila aplikasi tertutup atau sinyal putus, ada penanda offline, kirim ulang otomatis saat server sibuk, dan layar tidak lagi putih bila terjadi kesalahan.'
 ];

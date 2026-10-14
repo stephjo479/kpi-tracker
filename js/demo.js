@@ -1,10 +1,12 @@
 /*
  * BACKEND DEMO — meniru backend Apps Script dengan data FIKTIF,
  * tersimpan di browser saja. Dipakai untuk mencoba tampilan sebelum
- * spreadsheet terhubung. Login demo: OWNER / 1234 (admin), PAK BOS / 9999 (pimpinan), RINA / 1111 (karyawan).
+ * spreadsheet terhubung. Login demo: OWNER / 1234 (admin), PAK BOS / 9999 (pimpinan), RINA / 1111 (karyawan),
+ * MAYA / 6666 (Shorts) & NINA / 7777 (AI Drama long-form harian) — berdua memegang channel "Drama Recap (Client)".
+ * SARI / 3333 punya tugas khusus di luar channel (riset monetisasi).
  */
 var Demo = (function () {
-  var KEY = 'demoDB_v8';
+  var KEY = 'demoDB_v10';
   var NAMES = { DEV: 'DEV CHANNEL', STAFF: 'STAFF CHANNEL', CLIENT: 'CLIENT CHANNEL' };
 
   function pad(n) { return (n < 10 ? '0' : '') + n; }
@@ -23,7 +25,8 @@ var Demo = (function () {
       { name: 'SARI', role: 'EMPLOYEE', pin: '3333', active: true, notes: '' },
       { name: 'DIMAS', role: 'EMPLOYEE', pin: '4444', active: true, notes: '' },
       { name: 'LUTFI', role: 'EMPLOYEE', pin: '5555', active: true, notes: '' },
-      { name: 'MAYA', role: 'EMPLOYEE', pin: '6666', active: true, notes: '' }
+      { name: 'MAYA', role: 'EMPLOYEE', pin: '6666', active: true, notes: '' },
+      { name: 'NINA', role: 'EMPLOYEE', pin: '7777', active: true, notes: 'AI Drama long-form (demo)' }
     ];
     var rows = [
       ['@kuliner.nusantara', 'DEV CHANNEL', 'https://youtube.com/@kuliner.nusantara', 2, 'RINA', 'Rp 3.000.000 (Probation)', '10th every month', 'Target 10 video/orang/hari, dibagi ke channel yang dipegang.'],
@@ -34,7 +37,7 @@ var Demo = (function () {
       ['film.pendek@contoh.com', 'STAFF CHANNEL', 'https://youtube.com/@film.pendek', 10, 'DIMAS', 'Rp 3.200.000', '23rd every month', ''],
       ['shorts.lucu@contoh.com', 'STAFF CHANNEL', 'https://youtube.com/@shorts.lucu', 10, 'LUTFI', 'Rp 3.200.000', '10th every month', ''],
       ['@golf.daily (Client)', 'CLIENT CHANNEL', 'https://youtube.com/@golf.daily', 2, 'BAYU', 'Rp 3.500.000', '10th every month', '2 item: 1 video long-form, 1 thumbnail.'],
-      ['Drama Recap (Client)', 'CLIENT CHANNEL', '', 5, 'MAYA', 'Rp 3.500.000', '10th every month', ''],
+      ['Drama Recap (Client)', 'CLIENT CHANNEL', 'https://youtube.com/@drama.recap', 5, 'MAYA', 'Rp 3.500.000', '10th every month', 'Satu channel, dua pekerjaan: Maya = shorts, Nina = AI drama long-form.'],
       ['Variety Show (Client)', 'CLIENT CHANNEL', '', 5, 'MAYA', 'Rp 3.500.000', '10th every month', '']
     ];
     var channels = rows.map(function (x, i) {
@@ -45,24 +48,40 @@ var Demo = (function () {
         targetViews: x[0] === '@kuliner.nusantara' ? 60000 : x[0] === '@data.banding' ? 150000 : 0, targetSubs: x[0] === '@kuliner.nusantara' ? 300 : 0
       };
     });
+    // 1.8: pembagian tugas (sheet TIM CHANNEL)
+    channels.forEach(function (c) {
+      if (c.key === 'Drama Recap (Client)') {
+        c.employees = ['MAYA', 'NINA'];
+        c.members = [{ name: 'MAYA', label: 'Shorts', mode: 'COUNT', target: 4, notes: '' }, { name: 'NINA', label: 'AI Drama Long-form', mode: 'COUNT', target: 1, notes: '' }];
+      } else if (c.kpiMode === 'PROGRESS') c.members = [{ name: c.employees[0], label: 'Long-form', mode: 'PROGRESS', target: '', notes: '' }];
+      else c.members = [];
+    });
     var reports = [];
-    var skill = { RINA: 0.98, BAYU: 0.82, SARI: 0.9, DIMAS: 0.7, LUTFI: 1.02, MAYA: 0.93 };
+    var skill = { RINA: 0.98, BAYU: 0.82, SARI: 0.9, DIMAS: 0.7, LUTFI: 1.02, MAYA: 0.93, NINA: 0.9 };
     for (var k = 45; k >= 0; k--) {
       var d = KPI.addDays(t, -k);
       if (KPI.dow(d) > 5) continue;
       channels.forEach(function (c) {
-        var e = c.employees[0];
-        if (k === 0 && r() < 0.45) return;
-        if (r() > 0.9 * Math.min(1, skill[e] + 0.05)) return;
-        var q = Math.max(0, Math.round(c.target * (skill[e] - 0.15 + r() * 0.3)));
-        reports.push({
-          id: 'D' + reports.length, ts: d + 'T10:00:00Z', date: d, employee: e, channel: c.key, division: c.division,
-          task: c.indicator, qty: q, links: q ? 'https://youtube.com/shorts/demo' + reports.length : '', notes: '', updatedBy: e
+        KPI.channelMembers(c).forEach(function (m) {
+          if (m.mode !== 'COUNT') return; // tugas long-form dinilai dari progres proyek
+          var e = m.name;
+          if (k === 0 && r() < 0.45) return;
+          if (r() > 0.9 * Math.min(1, skill[e] + 0.05)) return;
+          var q = Math.max(0, Math.round(m.target * (skill[e] - 0.15 + r() * 0.3)));
+          // detail kerja (1.9): generate & editing — contoh pada long-form AI drama
+          var gen = e === 'NINA' && r() < 0.6 ? 1 + Math.floor(r() * 2) : 0, edit = e === 'NINA' && r() < 0.5 ? 1 : 0;
+          reports.push({
+            id: 'D' + reports.length, ts: d + 'T10:00:00Z', date: d, employee: e, channel: c.key, division: c.division,
+            task: c.indicator, qty: q, links: q ? 'https://youtube.com/shorts/demo' + reports.length : '', notes: '', updatedBy: e,
+            gen: gen, genFor: gen ? (r() < 0.6 ? 'BESOK' : 'HARI_INI') : '', edit: edit, editPct: edit ? 30 + Math.floor(r() * 6) * 10 : ""
+          });
         });
       });
     }
+    var demo = demoProjects(t);
     return {
       employees: employees, channels: channels, reports: reports, attendance: demoAttendance(employees, r, t), permissions: demoPermissions(t),
+      projects: demo.projects, progressLog: demo.log, tasks: demo.tasks, taskLog: demo.taskLog,
       config: {
         COMPANY_NAME: 'Studio Demo', TIMEZONE: 'Asia/Jakarta', WORK_DAYS: '1,2,3,4,5', TARGET_PERIOD: 'DAILY',
         WEIGHT_OUTPUT: '80', WEIGHT_DISCIPLINE: '20', SYNC_CURRENT_RESULT: 'TRUE', EMPLOYEE_SEE_ALL: 'FALSE',
@@ -80,9 +99,45 @@ var Demo = (function () {
     };
   }
 
+  /** Proyek video contoh: AI drama Nina (channel bersama) & golf Bayu (lewat deadline). */
+  function demoProjects(t) {
+    function iso(d) { return d + 'T09:30:00.000Z'; }
+    var A = 'Drama Recap (Client)', G = '@golf.daily (Client)';
+    var projects = [
+      { id: 'VG1', created: KPI.addDays(t, -3), channel: G, employee: 'BAYU', type: 'LONGFORM', title: 'Golf highlight Ep 12', qty: '', doneQty: 0, progress: 30, pace: 3, status: 'ACTIVE', deadline: KPI.addDays(t, -1), end: '', notes: 'Menunggu footage tambahan dari client', updated: iso(KPI.addDays(t, -2)) }
+    ];
+    var log = [];
+    [['VG1', -3, 0, 15, 'potong footage'], ['VG1', -2, 15, 30, 'color grading']].forEach(function (x) {
+      var p = projects.filter(function (y) { return y.id === x[0]; })[0];
+      log.push({ date: KPI.addDays(t, x[1]), employee: p.employee, projectId: p.id, channel: p.channel, from: x[2], to: x[3], units: (x[3] - x[2]) / 100 * p.pace, note: x[4] });
+    });
+    // tugas khusus di luar channel (1.9)
+    var tasks = [{ id: 'TD1', employee: 'SARI', title: 'Riset cara monetisasi channel YouTube yang cepat', mode: 'PROGRESS', target: 0, start: KPI.addDays(t, -3), deadline: KPI.addDays(t, 4),
+      status: 'ACTIVE', progress: 30, notes: 'Rangkum 3 strategi + contoh channel, kirim ke manager', createdBy: 'OWNER', updated: iso(KPI.addDays(t, -1)), end: '' }];
+    var taskLog = [{ date: KPI.addDays(t, -2), employee: 'SARI', taskId: 'TD1', from: 0, to: 15, qty: '', note: 'kumpulkan sumber' },
+      { date: KPI.addDays(t, -1), employee: 'SARI', taskId: 'TD1', from: 15, to: 30, qty: '', note: 'bandingkan 5 channel' }];
+    return { projects: projects, log: log, tasks: tasks, taskLog: taskLog };
+  }
+  /** Bersihkan & terapkan pembagian tugas ke channel (meniru writeTeam_ + membersToFields_ di backend). */
+  function applyMembers(c, list) {
+    var seen = {}, mem = [];
+    (list || []).forEach(function (m) {
+      var n = String((m && m.name) || '').trim().toUpperCase();
+      if (!n || seen[n]) return; seen[n] = 1;
+      var mode = String(m.mode).toUpperCase() === 'PROGRESS' ? 'PROGRESS' : 'COUNT';
+      var t = m.target === '' || m.target == null ? '' : Number(String(m.target).replace(',', '.'));
+      if (mode === 'COUNT' && t !== '' && (!isFinite(t) || t < 0 || t > 1000)) throw new Error('Target ' + n + ' tidak valid (0–1000).');
+      mem.push({ name: n, label: String(m.label || '').trim().slice(0, 60), mode: mode, target: mode === 'COUNT' ? t : '', notes: String(m.notes || '').slice(0, 200) });
+    });
+    var cnt = mem.filter(function (m) { return m.mode === 'COUNT'; });
+    c.members = mem; c.employees = mem.map(function (m) { return m.name; });
+    c.kpiMode = mem.length && !cnt.length ? 'PROGRESS' : 'COUNT';
+    if (cnt.length && cnt.every(function (m) { return m.target !== ''; })) c.target = Math.round(cnt.reduce(function (s, m) { return s + m.target; }, 0) * 100) / 100;
+  }
+
   function hhmm(min) { return String(Math.floor(min / 60)).padStart(2, '0') + ':' + String(min % 60).padStart(2, '0') + ':00'; }
   function demoAttendance(emps, r, t) {
-    var out = [], habit = { OWNER: 520, RINA: 530, BAYU: 548, SARI: 528, DIMAS: 552, LUTFI: 525, MAYA: 535 };
+    var out = [], habit = { OWNER: 520, RINA: 530, BAYU: 548, SARI: 528, DIMAS: 552, LUTFI: 525, MAYA: 535, NINA: 532 };
     for (var k = 30; k >= 1; k--) {
       var d = KPI.addDays(t, -k);
       if (KPI.dow(d) > 5) continue;
@@ -255,7 +310,11 @@ var Demo = (function () {
       }),
       ytLastSync: d.lastSync
     };
-    out.projects = d.projects || []; out.progressLog = d.progressLog || []; out.alerts = [];
+    out.projects = (d.projects || []).filter(function (p) { return seeAll || p.employee === u.name; });
+    out.progressLog = (d.progressLog || []).filter(function (l) { return seeAll || l.employee === u.name; });
+    out.tasks = (d.tasks || []).filter(function (x) { return seeAll || x.employee === u.name; });
+    out.taskLog = (d.taskLog || []).filter(function (l) { return seeAll || l.employee === u.name; });
+    out.alerts = [];
     out.channelStats = channelStats(70);
     if (admin || u.role === 'VIEWER') out.admin = { employees: d.employees.map(function (e) { var o = Object.assign({}, e, { position: e.position || 'STAFF', login: !!e.pin }); if (!admin) delete o.pin; return o; }), spreadsheetUrl: '', configRaw: d.config, payroll: payrollItems(), reminderTo: admin ? ['owner@contoh.com'] : [], schedules: [], readOnly: !admin,
       backup: admin ? { last: d.lastBackup || null, folderUrl: '', keep: Number(d.config.BACKUP_KEEP) || 8, enabled: !/false/i.test(d.config.BACKUP_ENABLED), everyDays: 7 } : null,
@@ -274,7 +333,15 @@ var Demo = (function () {
     if (!admin && c.employees.indexOf(emp) < 0) throw new Error('Kamu tidak terdaftar di channel ini.');
     var q = Number(r.qty);
     if (!isFinite(q) || q < 0) throw new Error('Jumlah tidak valid.');
-    return { date: r.date, employee: emp, channel: c.key, division: c.division, task: r.task || c.indicator, qty: q, links: r.links || '', notes: r.notes || '' };
+    var det = detail(r);
+    return { date: r.date, employee: emp, channel: c.key, division: c.division, task: r.task || c.indicator, qty: q, links: r.links || '', notes: r.notes || '', gen: det.gen, genFor: det.genFor, edit: det.edit, editPct: det.editPct };
+  }
+  /** Detail kerja (generate & editing) — aturan sama dengan backend cleanDetail_. */
+  function detail(r) {
+    function cnt(v, label) { if (v === '' || v == null) return 0; var n = Number(v); if (!isFinite(n) || n < 0 || n > 100 || Math.round(n) !== n) throw new Error('Jumlah ' + label + ' tidak valid (0–100).'); return n; }
+    var gen = cnt(r.gen, 'video generate'), edit = cnt(r.edit, 'video editing'), pct = edit ? Number(r.editPct) : 0;
+    if (edit && (!isFinite(pct) || pct < 0 || pct > 100)) throw new Error('Progres editing harus 0–100%.');
+    return { gen: gen, genFor: gen ? (String(r.genFor).toUpperCase() === 'BESOK' ? 'BESOK' : 'HARI_INI') : '', edit: edit, editPct: edit ? Math.round(pct) : '' };
   }
   function canEdit(rep, u) {
     if (u.role === 'ADMIN') return;
@@ -342,11 +409,13 @@ var Demo = (function () {
       if (KPI.dow(n.date) <= 5 && n.min < 1020) ex.early = b.earlyNote || '(tanpa keterangan)';
       var tasks = b.tasks || [];
       if (!tasks.length) { ex.out = ''; throw new Error('Laporan akhir wajib diisi.'); }
-      var outputs = (b.outputs || []).filter(function (o) { return o.qty > 0; });
+      var outputs = (b.outputs || []).map(function (o) { var x = Object.assign({}, o, detail(o)); x.qty = Number(o.qty) || 0; return x; }).filter(function (o) { return o.qty > 0 || o.gen > 0 || o.edit > 0; });
       outputs.forEach(function (o, i) {
         var c = d.channels.filter(function (x) { return x.key === o.channel; })[0];
-        d.reports.push({ id: 'D' + Date.now().toString(36) + i, ts: new Date().toISOString(), date: n.date, employee: u.name, channel: o.channel, division: c ? c.division : '', task: c ? c.indicator : 'PRODUCTION', qty: o.qty, links: o.links || '', notes: 'Laporan presensi pulang', updatedBy: u.name });
+        d.reports.push({ id: 'D' + Date.now().toString(36) + i, ts: new Date().toISOString(), date: n.date, employee: u.name, channel: o.channel, division: c ? c.division : '', task: c ? c.indicator : 'PRODUCTION', qty: o.qty, links: o.links || '', notes: 'Laporan presensi pulang', updatedBy: u.name, gen: o.gen, genFor: o.genFor, edit: o.edit, editPct: o.editPct });
       });
+      if (b.projects && b.projects.length) AUTH.updateProgress({ updates: b.projects }, u);
+      if (b.taskUpdates && b.taskUpdates.length) AUTH.updateTask({ updates: b.taskUpdates }, u);
       ex.report = { tasks: tasks, outputs: outputs, at: n.time };
       ex.completion = Math.round(tasks.reduce(function (s2, t) { return s2 + t.progress; }, 0) / tasks.length);
       save();
@@ -368,6 +437,20 @@ var Demo = (function () {
       var d = load(); d.permissions = (d.permissions || []).filter(function (x) { return !(x.id === b.id && (x.name === u.name || u.role === 'ADMIN')); }); save(); return { ok: true };
     },
     getAudit: function () { return { rows: [] }; },
+    updateTask: function (b, u) {
+      var d = load(), t = today(), name = u.role === 'ADMIN' && b.name ? b.name : u.name, n = 0;
+      (b.updates || []).forEach(function (up) {
+        var x = (d.tasks || []).filter(function (y) { return y.id === up.id; })[0]; if (!x || x.status !== 'ACTIVE') return;
+        if (x.employee !== u.name && u.role !== 'ADMIN') throw new Error('Tugas "' + x.title + '" bukan milikmu.');
+        var note = String(up.note || '').slice(0, 300);
+        d.taskLog = d.taskLog || [];
+        if (x.mode === 'COUNT') { var q = Number(up.qty); if (!(q > 0)) return; d.taskLog.push({ date: t, employee: x.employee, taskId: x.id, from: '', to: '', qty: q, note: note }); n++; return; }
+        var to = Math.max(0, Math.min(100, Math.round(Number(up.progress)))); if (!isFinite(to) || to === x.progress) return;
+        d.taskLog.push({ date: t, employee: x.employee, taskId: x.id, from: x.progress, to: to, qty: '', note: note });
+        x.progress = to; x.updated = new Date().toISOString(); if (to >= 100) { x.status = 'DONE'; x.end = t; } n++;
+      });
+      save(); return { updated: n, tasks: (d.tasks || []).filter(function (x) { return x.employee === name; }) };
+    },
     saveTodo: function (b, u) {
       var d = load(), n = nowJkt();
       var ex = (d.attendance || []).filter(function (a) { return a.name === u.name && a.date === n.date; })[0];
@@ -387,20 +470,35 @@ var Demo = (function () {
       return { mime: 'image/jpeg', data: a._photo };
     },
     saveProject: function (b, u) {
-      var d = load(), p = b.project || {}, list = d.projects = d.projects || [];
-      if (p.id) { var x = list.filter(function (y) { return y.id === p.id; })[0]; Object.assign(x, { title: p.title || x.title, deadline: p.deadline || '', notes: p.notes || '' }); if (p.status && p.status !== x.status) { x.status = p.status; x.end = p.status === 'ACTIVE' ? '' : today(); } save(); return { project: x }; }
-      if (String(p.title || '').trim().length < 2) throw new Error('Tulis judul video.');
+      var d = load(), p = b.project || {}, list = d.projects = d.projects || [], admin = u.role === 'ADMIN';
+      if (p.id) {
+        var x = list.filter(function (y) { return y.id === p.id; })[0];
+        if (!x) throw new Error('Proyek tidak ditemukan.');
+        if (!admin && x.employee !== u.name) throw new Error('Hanya bisa mengubah proyek milikmu.');
+        Object.assign(x, { title: p.title || x.title, deadline: p.deadline || '', notes: p.notes || '', updated: new Date().toISOString() });
+        if (p.status && p.status !== x.status) { x.status = p.status; x.end = p.status === 'ACTIVE' ? '' : today(); }
+        save(); return { project: x };
+      }
+      var c = d.channels.filter(function (y) { return y.key === p.channel; })[0];
+      if (!c) throw new Error('Channel tidak ditemukan.');
+      var emp = admin && p.employee ? String(p.employee).toUpperCase() : u.name;
+      var mm = KPI.channelMembers(c).filter(function (m) { return m.name === emp; })[0];
+      var who = emp === u.name ? 'kamu' : emp.charAt(0) + emp.slice(1).toLowerCase();
+      if (!mm) throw new Error(emp === u.name ? 'Kamu tidak terdaftar di channel ini.' : who + ' tidak terdaftar di channel ini.');
+      if (mm.mode !== 'PROGRESS') throw new Error('Di channel ini ' + who + ' dihitung dari jumlah video, bukan proyek. Ubah pembagian tugas channel bila perlu (Admin → Channel → Ubah).');
+      if (String(p.title || '').trim().length < 2) throw new Error('Tulis judul / nama video.');
       var sh = p.type === 'SHORTS';
-      var np = { id: 'V' + Date.now().toString(36), created: today(), channel: p.channel, employee: u.role === 'ADMIN' && p.employee ? p.employee : u.name, type: sh ? 'SHORTS' : 'LONGFORM', title: p.title, qty: sh ? Number(p.qty) || 7 : '', doneQty: 0, progress: 0, pace: sh ? 1 : 3, status: 'ACTIVE', deadline: p.deadline || '', end: '', notes: p.notes || '' };
+      var np = { id: 'V' + Date.now().toString(36), created: today(), channel: c.key, employee: emp, type: sh ? 'SHORTS' : 'LONGFORM', title: p.title, qty: sh ? Number(p.qty) || 7 : '', doneQty: 0, progress: 0, pace: sh ? 1 : 3, status: 'ACTIVE', deadline: p.deadline || '', end: '', notes: p.notes || '', updated: new Date().toISOString() };
       list.push(np); save(); return { project: np };
     },
     updateProgress: function (b, u) {
       var d = load(), t = today(), name = u.role === 'ADMIN' && b.name ? b.name : u.name;
       (b.updates || []).forEach(function (up) {
-        var x = (d.projects || []).filter(function (y) { return y.id === up.id; })[0]; if (!x) return;
+        var x = (d.projects || []).filter(function (y) { return y.id === up.id; })[0]; if (!x || x.status !== 'ACTIVE') return;
+        if (x.employee !== u.name && u.role !== 'ADMIN') throw new Error('Proyek ' + x.title + ' bukan milikmu.');
         var to = x.type === 'SHORTS' ? Math.round(Math.min(x.qty, up.doneQty) / x.qty * 100) : Math.max(0, Math.min(100, up.progress));
-        (d.progressLog = d.progressLog || []).push({ date: t, employee: x.employee, projectId: x.id, channel: x.channel, from: x.progress, to: to, units: (to - x.progress) / 100 * x.pace });
-        x.progress = to; if (x.type === 'SHORTS') x.doneQty = up.doneQty; if (to >= 100) { x.status = 'DONE'; x.end = t; }
+        (d.progressLog = d.progressLog || []).push({ date: t, employee: x.employee, projectId: x.id, channel: x.channel, from: x.progress, to: to, units: (to - x.progress) / 100 * x.pace, note: String(up.note || '').slice(0, 300) });
+        x.progress = to; x.updated = new Date().toISOString(); if (x.type === 'SHORTS') x.doneQty = up.doneQty; if (to >= 100) { x.status = 'DONE'; x.end = t; }
       });
       save(); return { updated: (b.updates || []).length, alert: null, projects: (d.projects || []).filter(function (p) { return p.employee === name; }) };
     },
@@ -427,14 +525,23 @@ var Demo = (function () {
       var d = load(), c = d.channels.filter(function (x) { return x.row === b.channel.row && x.key === b.channel.key; })[0];
       if (!c) throw new Error('Channel tidak ditemukan.');
       var f = b.channel.fields || {};
+      if (Array.isArray(f.members)) applyMembers(c, f.members);
       Object.keys(f).forEach(function (k) {
+        if (k === 'members') return;
         if (k === 'employees') c.employees = (Array.isArray(f[k]) ? f[k] : String(f[k]).split(/[,&]/)).map(function (s) { return s.trim().toUpperCase(); }).filter(Boolean);
         else if (k === 'target') c.target = Number(f[k]) || 0;
         else if (k === 'minDuration') c.minDuration = Number(f[k]) || 0;
         else if (k === 'targetViews' || k === 'targetSubs') c[k] = Number(String(f[k]).replace(/\D/g, '')) || 0;
         else c[k] = f[k];
       });
-      if (f.name) { var old = c.key; c.key = c.name = f.name.trim(); d.reports.forEach(function (r) { if (r.channel === old) r.channel = c.key; }); }
+      if (f.name) {
+        var old = c.key, nk = f.name.replace(/\s+/g, ' ').trim();
+        if (nk !== old && d.channels.some(function (x) { return x !== c && x.key.toUpperCase() === nk.toUpperCase(); })) throw new Error('Channel dengan nama ini sudah ada.');
+        c.key = c.name = nk;
+        d.reports.forEach(function (r) { if (r.channel === old) r.channel = c.key; });
+        (d.projects || []).forEach(function (p) { if (p.channel === old) p.channel = c.key; });
+        (d.progressLog || []).forEach(function (l) { if (l.channel === old) l.channel = c.key; });
+      }
       if (f.type) c.division = div(f.type);
       if (f.link !== undefined) { c.linkNote = c.link ? '' : c.linkNote; }
       ensureEmployees(); save(); return { ok: true };
@@ -442,7 +549,11 @@ var Demo = (function () {
     addChannel: function (b) {
       var d = load(), c = b.channel;
       if (!String(c.name || '').trim()) throw new Error('Nama channel wajib diisi.');
+      if (d.channels.some(function (x) { return x.key.toUpperCase() === String(c.name).replace(/\s+/g, ' ').trim().toUpperCase(); })) throw new Error('Channel dengan nama ini sudah ada.');
+      var tmp = { target: Number(c.target) || 0, employees: [], kpiMode: c.kpiMode };
+      if (Array.isArray(c.members)) { applyMembers(tmp, c.members); c.employees = tmp.employees.join(', '); c.kpiMode = tmp.kpiMode; c.target = tmp.target; }
       d.channels.push({
+        members: tmp.members || [],
         row: d.channels.length + 3, key: c.name.trim(), name: c.name.trim(), type: c.type, division: div(c.type), link: c.link || '', linkNote: '',
         indicator: c.indicator || 'PRODUCTION', target: Number(c.target) || 0, current: 0, notes: c.notes || '',
         employees: String(c.employees || '').split(/[,&]/).map(function (s) { return s.trim().toUpperCase(); }).filter(Boolean),
@@ -484,6 +595,33 @@ var Demo = (function () {
       var rec = { date: r.date, name: r.name, in: (r.in || '') + ':00', out: r.out ? r.out + ':00' : '', lateMin: Math.max(0, KPI.toMin(r.in) - 540), otMin: r.otFor && r.out ? Math.max(0, KPI.toMin(r.out) - 1020) : 0, otFor: r.otFor || '', otBy: r.otBy || '', early: '', notes: r.notes || 'Dikoreksi oleh ' + u.name, updatedBy: u.name };
       if (i >= 0) list[i] = rec; else list.push(rec);
       save(); return { ok: true, record: rec };
+    },
+    saveTask: function (b, u) {
+      var d = load(), p = b.task || {}, t = today(), list = d.tasks = d.tasks || [], x;
+      if (p.id) { x = list.filter(function (y) { return y.id === p.id; })[0]; if (!x) throw new Error('Tugas tidak ditemukan.'); }
+      else {
+        var e = d.employees.filter(function (y) { return y.name === String(p.employee || '').toUpperCase() && y.active; })[0];
+        if (!e) throw new Error('Karyawan tidak ditemukan / tidak aktif.');
+        x = { id: 'T' + Date.now().toString(36), employee: e.name, title: '', mode: 'PROGRESS', target: 0, start: t, deadline: '', status: 'ACTIVE', progress: 0, notes: '', createdBy: u.name, end: '' };
+      }
+      ['title', 'start', 'deadline', 'notes'].forEach(function (k) { if (p[k] !== undefined) x[k] = String(p[k] || '').trim(); });
+      if (p.mode !== undefined) x.mode = p.mode === 'COUNT' ? 'COUNT' : 'PROGRESS';
+      if (p.target !== undefined) x.target = Number(p.target) || 0;
+      if (x.title.length < 3) throw new Error('Tulis nama tugas (minimal 3 huruf).');
+      if (x.mode === 'PROGRESS' && !x.deadline) throw new Error('Isi deadline tugas.');
+      if (x.deadline && x.deadline < x.start) throw new Error('Deadline tidak boleh sebelum tanggal mulai.');
+      if (x.mode === 'COUNT' && !(x.target > 0)) throw new Error('Isi target jumlah per hari (lebih dari 0).');
+      if (p.status && p.status !== x.status) {
+        x.status = p.status; x.end = p.status === 'ACTIVE' ? '' : t;
+        if (p.status === 'DONE' && x.mode === 'PROGRESS' && x.progress < 100) { (d.taskLog = d.taskLog || []).push({ date: t, employee: x.employee, taskId: x.id, from: x.progress, to: 100, qty: '', note: 'Ditandai selesai oleh ' + u.name }); x.progress = 100; }
+      }
+      x.updated = new Date().toISOString();
+      if (!p.id) list.push(x);
+      save(); return { task: x };
+    },
+    deleteTask: function (b) {
+      var d = load(); d.tasks = (d.tasks || []).filter(function (x) { return x.id !== b.id; }); d.taskLog = (d.taskLog || []).filter(function (l) { return l.taskId !== b.id; });
+      save(); return { ok: true };
     },
     deletePayrollItem: function (b) { var d = load(); d.payroll.splice(Number(b.row) - 2, 1); save(); return { payroll: payrollItems() }; },
     sendReminderTest: function () { return { to: ['owner@contoh.com'], date: '', total: 0, items: 0 }; },

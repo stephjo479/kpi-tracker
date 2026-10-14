@@ -208,13 +208,46 @@
   }
   function kpiRange(from, to) {
     var d = D();
-    return KPI.compute({ channels: d.channels, reports: d.reports, employees: d.employees, attendance: d.attendance, permissions: d.permissions, projects: d.projects, progressLog: d.progressLog, channelStats: d.channelStats || {}, from: from, to: to, today: today(), config: d.config });
+    return KPI.compute({ channels: d.channels, reports: d.reports, employees: d.employees, attendance: d.attendance, permissions: d.permissions, projects: d.projects, progressLog: d.progressLog, tasks: d.tasks || [], taskLog: d.taskLog || [], channelStats: d.channelStats || {}, from: from, to: to, today: today(), config: d.config });
   }
   function kpiPeriod(kind) { var r = KPI.periodRange(kind, today()); return kpiRange(r.from, r.to); }
-  function channelActual(key, from, to) {
-    return D().reports.filter(function (r) { return r.channel === key && r.date >= from && r.date <= to; }).reduce(function (s, r) { return s + (Number(r.qty) || 0); }, 0);
+  /* ---- 1.8: pembagian tugas di dalam channel (siapa mengerjakan apa) ---- */
+  function membersOf(c) { return c ? KPI.channelMembers(c) : []; }
+  function memberOf(c, name) { return membersOf(c).filter(function (m) { return m.name === name; })[0] || null; }
+  /** Orang ini dinilai dari progres proyek (bukan jumlah video) di channel c? */
+  function isProgFor(c, name) { var m = memberOf(c, name); return m ? m.mode === 'PROGRESS' : !!c && c.kpiMode === 'PROGRESS'; }
+  function countMembers(c) { return membersOf(c).filter(function (m) { return m.mode === 'COUNT'; }); }
+  function progMembers(c) { return membersOf(c).filter(function (m) { return m.mode === 'PROGRESS'; }); }
+  /** Jumlah output di laporan. Laporan anggota ber-mode progres tidak dihitung sebagai output. name = hanya orang itu. */
+  function channelActual(key, from, to, name) {
+    var prog = {};
+    progMembers(channelByKey(key)).forEach(function (m) { prog[m.name] = 1; });
+    return D().reports.filter(function (r) { return r.channel === key && r.date >= from && r.date <= to && !prog[r.employee] && (!name || r.employee === name); })
+      .reduce(function (s, r) { return s + (Number(r.qty) || 0); }, 0);
   }
-  function channelTargetToday(c) { var t = today(); var k = KPI.normalizeConfig(cfg()); return KPI.isWorkday(t, k) ? KPI.dailyTarget(c.target, t, k) : 0; }
+  /** Target output hari ini = jumlah target anggota mode jumlah (atau target satu orang bila name diisi). */
+  function channelTargetToday(c, name) {
+    var t = today(), k = KPI.normalizeConfig(cfg());
+    if (!c || !KPI.isWorkday(t, k)) return 0;
+    return countMembers(c).filter(function (m) { return !name || m.name === name; })
+      .reduce(function (s, m) { return s + KPI.dailyTarget(m.target, t, k); }, 0);
+  }
+  function periodWord() { var p = String(cfg().TARGET_PERIOD || 'DAILY').toUpperCase(); return p === 'WEEKLY' ? 'minggu' : p === 'MONTHLY' ? 'bulan' : 'hari'; }
+  /** Chip "Ava · Shorts" */
+  function memberChip(m, me) {
+    return '<span class="badge mem-chip' + (m.mode === 'PROGRESS' ? ' prog' : '') + (me && m.name === me ? ' me' : '') + '">' + icon(m.mode === 'PROGRESS' ? 'trend' : 'video') +
+      '<span>' + esc(cap(m.name)) + '</span>' + (m.label ? '<span class="mem-label">' + esc(m.label) + '</span>' : '') + '</span>';
+  }
+  function memberChips(c) {
+    var me = S.user && S.user.name, list = membersOf(c);
+    return list.length ? '<div class="mem-chips">' + list.map(function (m) { return memberChip(m, me); }).join('') + '</div>' : '<span class="xs muted">Belum ada yang memegang channel ini.</span>';
+  }
+  function channelProjects(c) { return projectsAll().filter(function (p) { return p.channel === c.key; }); }
+  /** Ringkasan proyek aktif channel: { n, avg } */
+  function projSummary(list) {
+    var act = list.filter(function (p) { return p.status === 'ACTIVE'; });
+    return { n: act.length, avg: act.length ? act.reduce(function (s, p) { return s + (Number(p.progress) || 0); }, 0) / act.length : null };
+  }
   function avatar(c, cls) {
     var y = ytOf(c);
     var d = c.division || 'OTHER';
@@ -234,6 +267,21 @@
     return d;
   }
   function daysBetween(a, b) { return Math.round((Date.parse(b) - Date.parse(a)) / 864e5); }
+
+  /* ---- 1.8: draf isian (tidak hilang bila aplikasi tertutup, baterai habis, atau sinyal putus) ---- */
+  function draftKey(kind) { return 'draft_' + kind + '_' + ((S.user && S.user.name) || '-'); }
+  function draftGet(kind) {
+    var d = Store.getJSON(draftKey(kind));
+    if (!d || !S.user || d.user !== S.user.name) return null;
+    if (Date.now() - (d.savedAt || 0) > 3 * 864e5) { draftClear(kind); return null; }
+    return d;
+  }
+  function draftSet(kind, data) { if (!S.user) return; data.user = S.user.name; data.savedAt = Date.now(); Store.setJSON(draftKey(kind), data); }
+  function draftClear(kind) { Store.set(draftKey(kind), null); }
+  function saveRepDraft() {
+    var f = S.form; if (!f || S.editId) return;
+    draftSet('rep', { form: { employee: f.employee, channel: f.channel, date: f.date, task: f.task, qty: f.qty, links: f.links, notes: f.notes, genOn: f.genOn, gen: f.gen, genFor: f.genFor, edit: f.edit, editPct: f.editPct } });
+  }
 
   /* ---------------- LOADING ---------------- */
   function handleErr(e) {
@@ -300,6 +348,8 @@
 
   /* ---------------- AUTH ---------------- */
   function logout(silent) {
+    // keluar manual → draf dibuang; sesi habis (silent) → draf disimpan agar bisa dikirim setelah login lagi
+    if (!silent && S.user) { draftClear('rep'); draftClear('co'); }
     ['token', 'user', 'cache_data', 'cache_yt'].forEach(function (k) { Store.set(k, null); });
     S.token = null; S.user = null; S.data = null; S.yt = null; S.form = null; S.editId = null;
     closeModal();
@@ -402,8 +452,22 @@
   var mounts = [];
   function onMount(fn) { mounts.push(fn); }
 
+  /** 1.8: kesalahan tampilan tidak boleh membuat layar putih — tampilkan kartu pemulihan. */
   function render() {
     var app = $('#app');
+    try { renderPage(app); }
+    catch (err) {
+      console.error(err);
+      mounts = [];
+      var box = '<div class="card mt"><div class="empty">' + icon('alert') + '<div class="bold">Terjadi kesalahan tampilan</div>' +
+        '<div class="xs">Data kamu aman. Tekan "Muat ulang"; bila masih muncul, kabari admin.</div>' +
+        '<div class="row wrap mt-sm" style="justify-content:center"><button class="btn sm" data-act="hard-reload">' + icon('refresh') + 'Muat ulang</button>' +
+        (S.token ? '<a class="btn ghost sm" href="#/home">' + icon('home') + 'Ke beranda</a>' : '') + '</div>' +
+        '<div class="xs muted mt-sm" translate="no">' + esc(String((err && err.message) || err).slice(0, 160)) + '</div></div></div>';
+      try { app.innerHTML = S.token ? shellView(route().name, box) : box; } catch (e2) { app.innerHTML = '<div style="padding:16px">' + box + '</div>'; }
+    }
+  }
+  function renderPage(app) {
     mounts = [];
     if (!S.token) { app.innerHTML = loginView(); runMounts(); return; }
     var r = route();
@@ -451,8 +515,14 @@
       '<a class="btn ghost icon sm' + (active === 'team' ? ' active' : '') + '" href="#/team" aria-label="Struktur tim" title="Struktur tim">' + icon('users') + '</a>' +
       '<button class="btn ghost icon sm" data-act="cycle-theme" aria-label="Ganti tema">' + icon(effectiveDark() ? 'moon' : 'sun') + '</button>' +
       '<a href="#/settings" aria-label="Akun">' + personAvatar(u.name, 'sm') + '</a></header>';
-    return '<div class="shell">' + side + '<div class="main">' + top + '<main class="content"><div id="update-slot">' + updateBanner() + '</div>' + trialBanner() + page + '</main></div>' + bottom + '</div>';
+    return '<div class="shell">' + side + '<div class="main">' + top + '<main class="content"><div id="update-slot">' + updateBanner() + '</div><div id="net-slot">' + netBanner() + '</div>' + trialBanner() + page + '</main></div>' + bottom + '</div>';
   }
+  /** 1.8: penanda offline. */
+  function netBanner() {
+    if (navigator.onLine !== false || API.isDemo()) return '';
+    return '<div class="notice warn small mb">' + icon('alert').replace('<svg ', '<svg width="14" height="14" style="vertical-align:-2px" ') + ' <b>Kamu sedang offline.</b> <span>Data yang tampil mungkin bukan yang terbaru. Isian tidak hilang — kirim lagi setelah internet tersambung.</span></div>';
+  }
+  function renderNetSlot() { var s = $('#net-slot'); if (s) s.innerHTML = netBanner(); }
 
   function loadingView() {
     return '<div class="grid grid-4">' + [1, 2, 3, 4].map(function () { return '<div class="card"><div class="skeleton" style="height:16px;width:50%"></div><div class="skeleton mt-sm" style="height:30px;width:70%"></div></div>'; }).join('') +
@@ -580,8 +650,8 @@
     var hero = '<div class="hero"><div class="hero-grid"><div class="ring-wrap">' + Charts.ring(score == null ? 0 : score / 100, { size: 132, stroke: 12, color: effectiveDark() ? getCss('--accent') : '#ffffff', track: effectiveDark() ? 'rgba(255,255,255,.08)' : 'rgba(255,255,255,.25)' }) +
       '<div class="ring-label"><div class="v num">' + (score == null ? '—' : score) + '</div><div class="l">Skor KPI</div></div></div>' +
       '<div><div class="sub small">' + esc(fmtDay(t)) + '</div><h1 style="margin:4px 0 2px">' + greet() + ', ' + esc(cap(u.name)) + '</h1>' +
-      '<div class="sub">' + (monthK ? 'Bulan ini: ' + esc(monthK.grade.label) + ' · ' + fmtN(monthK.actual) + ' dari ' + fmtN(monthK.target) + ' target' : 'Belum ada channel yang ditugaskan.') + '</div>' +
-      '<div class="hero-stats"><div class="hero-stat"><div class="v num">' + (todayK ? fmtN(todayK.actual) + '/' + fmtN(todayK.target) : '—') + '</div><div class="l">Output hari ini</div></div>' +
+      '<div class="sub">' + (monthK ? 'Bulan ini: ' + esc(monthK.grade.label) + ' · ' + fmtN(monthK.actual) + unitPct(monthK) + ' dari ' + fmtN(monthK.target) + unitPct(monthK) + ' target' : 'Belum ada channel yang ditugaskan.') + '</div>' +
+      '<div class="hero-stats"><div class="hero-stat"><div class="v num">' + (todayK ? fmtN(todayK.actual) + unitPct(todayK) + '/' + fmtN(todayK.target) + unitPct(todayK) : '—') + '</div><div class="l">Output hari ini</div></div>' +
       '<div class="hero-stat"><div class="v num">' + fmtPct(monthK && monthK.discipline) + '</div><div class="l">Disiplin lapor</div></div>' +
       '<div class="hero-stat"><div class="v num">' + mine.length + '</div><div class="l">Channel</div></div></div>' +
       '<div class="row wrap mt">' + (reportedToday
@@ -596,17 +666,24 @@
       statTile('Upload hari ini', fmtN(uploadsToday), null, 'video', 'terdeteksi di YouTube') + '</div>';
 
     var chList = mine.length ? mine.map(function (c) {
-      var target = channelTargetToday(c), actual = channelActual(c.key, t, t), y = ytOf(c);
+      var y = ytOf(c), mm = memberOf(c, u.name), prog = isProgFor(c, u.name), line;
+      if (prog) {
+        var ps = projSummary(channelProjects(c).filter(function (p) { return p.employee === u.name; }));
+        line = '<div class="row small" style="gap:8px"><div class="grow">' + bar(ps.avg == null ? null : ps.avg / 100, true) + '</div><span class="nowrap text-2">' + (ps.n ? ps.n + ' proyek aktif · rata-rata ' + Math.round(ps.avg) + '%' : 'Belum ada proyek aktif') + '</span></div>';
+      } else {
+        var target = channelTargetToday(c, u.name), actual = channelActual(c.key, t, t, u.name);
+        line = '<div class="row small" style="gap:8px"><div class="grow">' + bar(target ? actual / target : null, true) + '</div><span class="num nowrap text-2">' + fmtN(actual) + '/' + fmtN(target) + '</span></div>';
+      }
       return '<a class="list-item clickable" href="#/channel/' + encodeURIComponent(c.key) + '" style="color:inherit;text-decoration:none">' + avatar(c) +
-        '<div class="col grow"><div class="row"><span class="bold ellipsis">' + esc(chTitle(c)) + '</span>' + divBadge(c.division) + '</div>' +
-        '<div class="row small" style="gap:8px"><div class="grow">' + bar(target ? actual / target : null, true) + '</div><span class="num nowrap text-2">' + fmtN(actual) + '/' + fmtN(target) + '</span></div></div>' +
+        '<div class="col grow"><div class="row"><span class="bold ellipsis">' + esc(chTitle(c)) + '</span>' + divBadge(c.division) + (mm && mm.label ? '<span class="badge st-none">' + esc(mm.label) + '</span>' : '') + '</div>' +
+        line + '</div>' +
         '<div class="col right nowrap"><div class="bold num">' + (y && y.status === 'OK' ? fmtC(y.views) : '—') + '</div><div class="xs num ' + (y && y.dViews > 0 ? 'up' : 'muted') + '">' + (y && y.dViews != null ? signed(y.dViews, true) : 'views') + '</div></div></a>';
     }).join('') : '<div class="empty">' + icon('yt') + '<div>Kamu belum terdaftar di channel manapun.</div></div>';
 
     var tv = topVideos(mine, 5);
     var myReports = D().reports.filter(function (r) { return r.employee === u.name; }).sort(sortReports).slice(0, 5);
 
-    return presenceCard() + hero + tiles +
+    return presenceCard() + hero + myTasksCard() + tiles +
       '<div class="grid grid-main mt"><div class="card"><div class="card-head"><h2>Channel saya hari ini</h2><a class="small" href="#/channels">Lihat semua</a></div><div class="list">' + chList + '</div></div>' +
       '<div class="card"><div class="card-head"><h2>Video naik (24 jam)</h2></div><div class="list">' + (tv.length ? tv.map(function (x) { return videoRow(x, true); }).join('') : emptyYT()) + '</div></div></div>' +
       '<div class="card mt"><div class="card-head"><h2>Laporan terakhir</h2><a class="small" href="#/report">Buka laporan</a></div>' + reportList(myReports, false) + '</div>' +
@@ -629,9 +706,10 @@
     var d = D();
     var todayK = kpiRange(t, t), monthK = kpiPeriod('month');
     var staff = d.employees.filter(function (e) { return e.active && e.role !== 'ADMIN' && !KPI.isLeader(e); });
-    var assigned = staff.filter(function (e) { return d.channels.some(function (c) { return c.employees.indexOf(e.name) >= 0; }); });
+    var assigned = staff.filter(function (e) { return d.channels.some(function (c) { return c.employees.indexOf(e.name) >= 0; }) || tasksOf(e.name).length > 0; });
     var reported = {};
     d.reports.forEach(function (r) { if (r.date === t) reported[r.employee] = 1; });
+    (d.taskLog || []).forEach(function (l) { if (l.date === t) reported[l.employee] = 1; });
     var notYet = assigned.filter(function (e) { return !reported[e.name]; });
     var yt = ytTotals(d.channels);
     var workday = KPI.isWorkday(t, kcfg);
@@ -739,7 +817,7 @@
         var list = members[n];
         return '<div class="list-item" style="align-items:flex-start">' + personAvatar(n, 'sm') + '<div class="col grow">' +
           '<div class="row wrap" style="gap:6px"><span class="bold">' + esc(cap(n)) + '</span>' + (leaderSet[n] ? posBadge({ position: leaderSet[n] }) : '') + (n === me ? '<span class="xs muted">(kamu)</span>' : '') + '</div>' +
-          '<div class="xs text-2">' + list.length + ' channel: ' + list.map(function (c) { return '<a href="#/channel/' + encodeURIComponent(c.key) + '">' + esc(chTitle(c)) + '</a>'; }).join(', ') + '</div></div></div>';
+          '<div class="xs text-2">' + list.length + ' channel: ' + list.map(function (c) { var mm = memberOf(c, n); return '<a href="#/channel/' + encodeURIComponent(c.key) + '">' + esc(chTitle(c)) + '</a>' + (mm && mm.label ? ' <span class="mem-label-inline">(' + esc(mm.label) + ')</span>' : ''); }).join(', ') + '</div></div></div>';
       }).join('') || '<div class="empty">Belum ada anggota.</div>';
       var staffCount = order.filter(function (n) { return !leaderSet[n]; }).length;
       return '<div class="card"><div class="card-head"><h2 class="row"><span class="dot" style="width:10px;height:10px;border-radius:50%;display:inline-block;background:var(' + DIV[k].color + ')"></span>' + esc(DIV[k].label) + '</h2>' +
@@ -751,7 +829,7 @@
       idle.map(function (e) { return '<span class="chip" style="cursor:default">' + esc(cap(e.name)) + '</span>'; }).join('') + '</div></div>' : '';
 
     return pageHead('Struktur tim', 'Siapa mengerjakan apa di <b>' + esc(company) + '</b>, supaya tidak ada miskomunikasi.') +
-      top + contact + '<h2 class="mt mb" style="margin-top:28px">Divisi & channel</h2><div class="grid grid-3">' + divCards + '</div>' + idleCard;
+      top + contact + '<h2 class="mt mb" style="margin-top:28px">Divisi & channel</h2><div class="grid grid-3">' + divCards + '</div>' + teamTasksCard() + idleCard;
   }
 
   function isStandalone() {
@@ -823,7 +901,23 @@
   function defaultForm() {
     var mine = myChannels();
     var emp = isAdmin() ? '' : S.user.name;
-    return { employee: emp, channel: mine.length === 1 ? mine[0].key : '', date: today(), task: '', qty: 1, links: '', notes: '' };
+    var f = { employee: emp, channel: mine.length === 1 ? mine[0].key : '', date: today(), task: '', qty: 1, links: '', notes: '', genOn: false, gen: 1, genFor: 'HARI_INI', edit: 0, editPct: '' };
+    // 1.8: pulihkan draf laporan yang belum terkirim (aplikasi tertutup / sinyal putus)
+    var dr = draftGet('rep');
+    if (dr && dr.form && (String(dr.form.links || '').trim() || String(dr.form.notes || '').trim() || Number(dr.form.qty) > 1 || dr.form.genOn || Number(dr.form.edit) > 0)) {
+      ['employee', 'channel', 'date', 'task', 'qty', 'links', 'notes', 'genOn', 'gen', 'genFor', 'edit', 'editPct'].forEach(function (k) { if (dr.form[k] != null) f[k] = dr.form[k]; });
+      var back = Number(cfg().BACKDATE_DAYS) || 3;
+      if (!isAdmin() && (!f.date || f.date < KPI.addDays(today(), -back) || f.date > today())) f.date = today();
+      if (f.channel && !channelByKey(f.channel)) f.channel = '';
+      if (!isAdmin()) f.employee = S.user.name;
+      f._draft = true;
+    }
+    return f;
+  }
+  /** Target (per TARGET_PERIOD) satu orang di channel; bila bukan anggota mode jumlah → target total channel. */
+  function memberTarget(c, name) {
+    var cm = countMembers(c), own = cm.filter(function (m) { return m.name === name; });
+    return (own.length ? own : cm).reduce(function (s, m) { return s + (m.target || 0); }, 0);
   }
 
   function reportForm() {
@@ -834,7 +928,10 @@
     var empChannels = d.channels.filter(function (c) { return c.employees.indexOf(emp) >= 0; });
     var others = admin ? d.channels.filter(function (c) { return empChannels.indexOf(c) < 0; }) : [];
     var editing = !!S.editId;
-    function opt(c) { return '<option value="' + esc(c.key) + '"' + (f.channel === c.key ? ' selected' : '') + '>' + esc(chTitle(c)) + (chTitle(c) !== c.name ? ' (' + esc(c.name) + ')' : '') + ' · target ' + fmtN(c.target) + '</option>'; }
+    function opt(c) {
+      var prog = c.employees.indexOf(emp) >= 0 && isProgFor(c, emp);
+      return '<option value="' + esc(c.key) + '"' + (f.channel === c.key ? ' selected' : '') + '>' + esc(chTitle(c)) + (chTitle(c) !== c.name ? ' (' + esc(c.name) + ')' : '') + ' · ' + (prog ? 'progres proyek' : 'target ' + fmtN(memberTarget(c, emp))) + '</option>';
+    }
     var chOptions = '<option value="">Pilih channel…</option>';
     ['DEV', 'STAFF', 'CLIENT', 'OTHER'].forEach(function (k) {
       var l = empChannels.filter(function (c) { return c.division === k; });
@@ -845,14 +942,20 @@
     var empOptions = admin ? '<div class="field"><label>Karyawan</label><select class="input" data-f="employee" required><option value="">Pilih karyawan…</option>' +
       d.employees.filter(function (e) { return e.active && e.login !== false; }).map(function (e) { return '<option' + (f.employee === e.name ? ' selected' : '') + '>' + esc(e.name) + '</option>'; }).join('') + '</select></div>' : '';
     var noChannel = !admin && !empChannels.length;
+    var progHere = !!selCh && !!emp && selCh.employees.indexOf(emp) >= 0 && isProgFor(selCh, emp);
+    var progNote = progHere ? '<div class="notice small mt-sm">' + icon('trend').replace('<svg ', '<svg width="14" height="14" style="vertical-align:-2px" ') + ' ' +
+      (emp === S.user.name ? '<span>Di channel ini kamu dinilai dari progres proyek, bukan jumlah video. Update progres di kartu "Proyek video" (di atas). Laporan ini tetap dihitung untuk disiplin laporan.</span>'
+        : '<span>' + esc(cap(emp)) + ' dinilai dari progres proyek di channel ini — laporan jumlah tidak dihitung sebagai output.</span>') + '</div>' : '';
     return '<div class="card"><div class="card-head"><h2>' + (editing ? 'Ubah laporan' : 'Isi laporan') + '</h2>' + (editing ? '<span class="badge st-warning">' + icon('edit') + 'Mode edit</span>' : '') + '</div>' +
-      (noChannel ? '<div class="notice warn">Kamu belum terdaftar di channel manapun. Hubungi admin.</div>' :
+      (f._draft && !editing && !noChannel ? '<div class="notice small mb row wrap" style="gap:8px"><span class="grow">📝 Draf laporan yang belum terkirim dipulihkan.</span><button type="button" class="btn ghost sm" data-act="discard-rep-draft">' + icon('trash') + 'Buang draf</button></div>' : '') +
+      (noChannel ? (tasksOf(S.user.name).length ? '<div class="notice">Kamu tidak memegang channel. Laporkan progres tugas khususmu di kartu "Tugas khusus" di atas, atau saat presensi pulang.</div>' : '<div class="notice warn">Kamu belum terdaftar di channel manapun. Hubungi admin.</div>') :
         '<form data-form="report">' + empOptions +
         '<div class="form-row"><div class="field"><label>Tanggal</label><input class="input" type="date" data-f="date" value="' + esc(f.date) + '" max="' + today() + '"' + (admin ? '' : ' min="' + KPI.addDays(today(), -back) + '"') + ' required></div>' +
         '<div class="field"><label>Jenis tugas</label><input class="input" data-f="task" list="task-list" value="' + esc(f.task) + '" placeholder="' + esc(selCh ? selCh.indicator : 'PRODUCTION') + '"><datalist id="task-list">' + TASKS.map(function (x) { return '<option value="' + x + '">'; }).join('') + '</datalist></div></div>' +
         '<div class="field"><label>Channel</label><select class="input" data-f="channel" required>' + chOptions + '</select>' +
-        (selCh ? '<div class="hint">Target ' + esc(String(cfg().TARGET_PERIOD || 'DAILY').toLowerCase() === 'daily' ? 'harian' : String(cfg().TARGET_PERIOD).toLowerCase()) + ': <b>' + fmtN(selCh.target) + '</b> · sudah dilaporkan tanggal ini: <b>' + fmtN(channelActual(selCh.key, f.date, f.date)) + '</b>' + (selCh.minDuration ? ' · <b>durasi minimal ' + fmtN(selCh.minDuration) + ' menit per video</b>' : '') + (selCh.notes ? ' · ' + esc(selCh.notes) : '') + '</div>' : '') + '</div>' +
-        '<div class="field"><label>Jumlah selesai</label><div class="stepper"><button type="button" data-act="qty" data-v="-1" aria-label="Kurangi">−</button><input type="number" inputmode="decimal" min="0" step="1" data-f="qty" value="' + esc(f.qty) + '" required><button type="button" data-act="qty" data-v="1" aria-label="Tambah">+</button></div></div>' +
+        (selCh && !progHere ? '<div class="hint">Target ' + esc(String(cfg().TARGET_PERIOD || 'DAILY').toLowerCase() === 'daily' ? 'harian' : String(cfg().TARGET_PERIOD).toLowerCase()) + ': <b>' + fmtN(memberTarget(selCh, emp)) + '</b> · sudah dilaporkan tanggal ini: <b>' + fmtN(channelActual(selCh.key, f.date, f.date, emp || null)) + '</b>' + (selCh.minDuration ? ' · <b>durasi minimal ' + fmtN(selCh.minDuration) + ' menit per video</b>' : '') + (selCh.notes ? ' · ' + esc(selCh.notes) : '') + '</div>' : '') + progNote + '</div>' +
+        '<div class="field"><label>Jumlah selesai <span class="muted">(dihitung KPI)</span></label><div class="stepper"><button type="button" data-act="qty" data-v="-1" aria-label="Kurangi">−</button><input type="number" inputmode="decimal" min="0" step="1" data-f="qty" value="' + esc(f.qty) + '" required><button type="button" data-act="qty" data-v="1" aria-label="Tambah">+</button></div></div>' +
+        (progHere ? '' : repDetailBox(f)) +
         '<div class="field"><label>Link video / hasil kerja</label><textarea class="input" data-f="links" rows="3" placeholder="Satu link per baris">' + esc(f.links) + '</textarea></div>' +
         '<div class="field"><label>Catatan <span class="muted">(opsional)</span></label><textarea class="input" data-f="notes" rows="2" placeholder="Kendala, info tambahan…">' + esc(f.notes) + '</textarea></div>' +
         '<div class="row"><button class="btn grow" id="report-submit">' + icon(editing ? 'check' : 'plus') + (editing ? 'Simpan perubahan' : 'Kirim laporan') + '</button>' +
@@ -874,8 +977,9 @@
             '<div class="col grow"><div class="row wrap" style="gap:6px"><span class="bold ellipsis">' + esc(c ? chTitle(c) : r.channel) + '</span>' + divBadge(c ? c.division : r.division) + '<span class="badge st-none">' + esc(r.task || 'PRODUCTION') + '</span></div>' +
             (showEmp ? '<div class="xs muted">oleh <b>' + esc(cap(r.employee)) + '</b>' + (r.updatedBy && r.updatedBy !== r.employee ? ' · diubah ' + esc(cap(r.updatedBy)) : '') + '</div>' : '') +
             (r.notes ? '<div class="small text-2" translate="' + (r.notes === 'Laporan presensi pulang' ? 'yes' : 'no') + '">' + esc(r.notes) + '</div>' : '') +
+            workDetailBadges(r) +
             (links.length ? '<div class="link-list">' + links.slice(0, 3).map(function (l) { return '<a href="' + esc(l) + '" target="_blank" rel="noopener">' + esc(l.replace(/^https?:\/\/(www\.)?/, '')) + '</a>'; }).join('') + (links.length > 3 ? '<span class="xs muted">+' + (links.length - 3) + ' link lainnya</span>' : '') + '</div>' : '') +
-            '</div><div class="col right"><div class="bold num" style="font-size:18px">' + fmtN(r.qty) + '</div>' +
+            '</div><div class="col right"><div class="bold num" style="font-size:18px">' + fmtN(r.qty) + '</div>' + (r.gen > 0 || r.edit > 0 ? '<div class="xs muted">selesai</div>' : '') +
             (canEdit(r) ? '<div class="row" style="gap:2px"><button class="btn ghost icon sm" data-act="edit-report" data-id="' + esc(r.id) + '" aria-label="Ubah">' + icon('edit').replace('<svg ', '<svg width="15" height="15" ') + '</button><button class="btn ghost icon sm" data-act="del-report" data-id="' + esc(r.id) + '" aria-label="Hapus">' + icon('trash').replace('<svg ', '<svg width="15" height="15" ') + '</button></div>' : '') +
             '</div></div>';
         }).join('') + '</div></div>';
@@ -898,7 +1002,7 @@
       '<div class="seg">' + [['today', 'Hari ini'], ['last7', '7 hari'], ['month', 'Bulan ini'], ['last30', '30 hari']].map(function (x) { return '<button class="' + (S.rep.range === x[0] ? 'active' : '') + '" data-act="rep-range" data-v="' + x[0] + '">' + x[1] + '</button>'; }).join('') + '</div></div>';
     var total = list.reduce(function (s, r) { return s + (Number(r.qty) || 0); }, 0);
     return pageHead('Laporan harian', 'Laporan utama sekarang diisi saat presensi pulang. Halaman ini untuk riwayat & tambahan bila ada yang terlewat.') +
-      (attEnabled() && iMustAttend() ? '<div class="notice mb small">' + icon('clock').replace('<svg ', '<svg width="14" height="14" style="vertical-align:-2px" ') + ' Pagi: presensi masuk + foto + to-do. Sore: presensi pulang + laporan progres & output. Form di bawah hanya untuk output yang terlewat.</div>' : '') + projectsCard() +
+      (attEnabled() && iMustAttend() ? '<div class="notice mb small">' + icon('clock').replace('<svg ', '<svg width="14" height="14" style="vertical-align:-2px" ') + ' Pagi: presensi masuk + foto + to-do. Sore: presensi pulang + laporan progres & output. Form di bawah hanya untuk output yang terlewat.</div>' : '') + projectsCard() + myTasksCard() +
       '<div class="grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1.25fr)" id="report-grid">' + reportForm() +
       '<div class="card"><div class="card-head"><h2>Riwayat</h2><span class="sub">' + list.length + ' laporan · ' + fmtN(total) + ' output</span></div>' + filters + '<div class="mt-sm">' + reportList(list, who !== 'ME') + '</div></div></div>' +
       '<style>@media(max-width:900px){#report-grid{grid-template-columns:minmax(0,1fr)!important}}</style>';
@@ -909,19 +1013,28 @@
     var btn = $('#report-submit');
     if (!f.channel) return toast('Pilih channel dulu.', 'error');
     if (isAdmin() && !f.employee) return toast('Pilih karyawan dulu.', 'error');
-    var payload = { id: S.editId, date: f.date, employee: isAdmin() ? f.employee : S.user.name, channel: f.channel, task: f.task || (channelByKey(f.channel) || {}).indicator, qty: Number(f.qty) || 0, links: f.links, notes: f.notes };
-    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Mengirim…';
+    var qty = Number(f.qty);
+    if (!isFinite(qty) || qty < 0 || qty > 1000) return toast('Jumlah tidak valid.', 'error');
+    if (S._sendingReport) return;
+    var empR = isAdmin() ? f.employee : S.user.name, chR = channelByKey(f.channel);
+    var det = chR && chR.employees.indexOf(empR) >= 0 && isProgFor(chR, empR) ? { gen: 0, genFor: '', edit: 0, editPct: '' } : repDetail(f);
+    if (det.error) return toast(det.error, 'error');
+    var payload = { id: S.editId, date: f.date, employee: empR, channel: f.channel, task: f.task || (chR || {}).indicator, qty: qty, links: f.links, notes: f.notes, gen: det.gen, genFor: det.genFor, edit: det.edit, editPct: det.editPct };
+    S._sendingReport = true;
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Mengirim…'; }
     var action = S.editId ? 'updateReport' : 'submitReport';
     API.call(action, { report: payload }).then(function (res) {
+      S._sendingReport = false;
       toast(S.editId ? 'Laporan diperbarui ✓' : 'Laporan terkirim ✓ KPI sudah diperbarui');
       if (!S.editId && res && res.report) D().reports.push(res.report);
       if (S.editId) { var r = D().reports.filter(function (x) { return x.id === S.editId; })[0]; if (r) Object.assign(r, payload, { employee: payload.employee }); }
+      draftClear('rep');
       var keep = { employee: f.employee, channel: f.channel, date: f.date };
       S.form = Object.assign(defaultForm(), keep, { qty: 1 });
       S.editId = null; S.dirty = false;
       render();
       loadData(true);
-    }).catch(function (e) { btn.disabled = false; btn.innerHTML = 'Coba lagi'; handleErr(e); });
+    }).catch(function (e) { S._sendingReport = false; var b2 = $('#report-submit'); if (b2) { b2.disabled = false; b2.innerHTML = icon('refresh') + 'Coba lagi'; } handleErr(e); });
   }
 
   /* =========================================================
@@ -967,7 +1080,7 @@
       return '<tr class="clickable" data-act="kpi-detail" data-name="' + esc(e.name) + '"' + (e.name === me ? ' style="background:var(--accent-soft)"' : '') + '>' +
         '<td class="muted bold num">' + (e.score == null ? '–' : i + 1) + '</td>' +
         '<td><div class="row">' + personAvatar(e.name, 'sm') + '<div class="col"><span class="bold">' + esc(cap(e.name)) + (e.name === me ? ' <span class="xs muted">(kamu)</span>' : '') + '</span><span class="row" style="gap:4px">' + e.divisions.map(divBadge).join('') + '</span></div></div></td>' +
-        '<td class="num">' + fmtN(e.target) + (e.unit ? ' <span class="xs muted">unit</span>' : '') + '</td><td class="num bold">' + fmtN(e.actual) + (e.unit ? ' <span class="xs muted">unit</span>' : '') + '</td>' +
+        '<td class="num">' + fmtN(e.target) + unitHtml(e) + '</td><td class="num bold">' + fmtN(e.actual) + unitHtml(e) + '</td>' +
         '<td style="min-width:150px"><div class="row" style="gap:8px"><div class="grow">' + bar(e.achievement) + '</div><span class="num small bold" style="width:44px;text-align:right">' + fmtPct(e.achievement) + '</span></div></td>' +
         '<td class="num">' + fmtPct(e.discipline) + '<div class="xs muted">' + e.reportedDays + '/' + e.workdays + ' hari</div></td>' +
         (showAtt ? '<td class="num">' + fmtPct(e.attendance) + '<div class="xs muted">' + (e.att ? (e.att.late ? e.att.late + '× telat' : '') + (e.att.late && e.att.alpa ? ' · ' : '') + (e.att.alpa ? e.att.alpa + '× alpa' : '') || 'aman' : '') + '</div></td>' : '') +
@@ -1008,8 +1121,10 @@
     var chRows = e.channels.map(function (c) {
       var ch = channelByKey(c.key);
       var up = ch ? uploadsIn(ch, res.from, res.effTo) : 0;
-      return '<tr><td><div class="row">' + (ch ? avatar(ch, 'sm') : '') + '<div class="col"><span class="bold ellipsis" style="max-width:220px">' + esc(ch ? chTitle(ch) : c.name) + '</span>' + divBadge(c.division) + '</div></div></td>' +
-        '<td class="num">' + fmtN(c.target) + '</td><td class="num bold">' + fmtN(c.actual) + '</td><td class="num">' + fmtPct(c.achievement) + '</td>' +
+      var u = c.mode === 'PROGRESS' ? ' <span class="xs muted">unit</span>' : c.mode === 'TASK' ? '%' : '';
+      return '<tr><td><div class="row">' + (ch ? avatar(ch, 'sm') : '') + '<div class="col"><span class="bold ellipsis" style="max-width:220px">' + esc(ch ? chTitle(ch) : c.name) + '</span>' +
+        '<span class="row wrap" style="gap:4px">' + (c.task ? '<span class="badge pos-MANAGER">' + icon('report') + 'Tugas khusus</span>' : divBadge(c.division) + (c.label ? '<span class="badge st-none">' + esc(c.label) + '</span>' : '')) + (c.mode === 'PROGRESS' ? '<span class="badge pos-MANAGER">' + icon('trend') + 'Progres proyek</span>' : '') + '</span></div></div></td>' +
+        '<td class="num">' + fmtN(c.target) + u + '</td><td class="num bold">' + fmtN(c.actual) + u + '</td><td class="num">' + fmtPct(c.achievement) + '</td>' +
         '<td class="num">' + (ch && ytOf(ch) && ytOf(ch).status === 'OK' ? fmtN(up) : '<span class="muted">—</span>') + '</td>' +
         (anyOut ? '<td class="num">' + (c.outcome ? fmtPct(c.outcome.achievement) + (c.outcome.views != null ? '<div class="xs muted">' + signed(c.outcome.views, true) + ' / ' + fmtC(c.outcome.targetViews) + ' views</div>' : '') : '<span class="muted">—</span>') + '</td>' : '') + '</tr>';
     }).join('');
@@ -1017,14 +1132,14 @@
       title: esc(cap(e.name)) + ' · KPI <span class="small muted">' + esc(fmtDate(res.from)) + ' – ' + esc(fmtDate(res.to)) + '</span>', wide: true,
       body: '<div class="grid grid-4">' +
         '<div class="stat"><div class="label">Skor</div><div class="value num">' + (e.score == null ? '—' : e.score) + '</div><div>' + statusBadge(e.grade) + '</div></div>' +
-        '<div class="stat"><div class="label">Capaian</div><div class="value num">' + fmtPct(e.achievement) + '</div><div class="xs muted num">' + fmtN(e.actual) + ' / ' + fmtN(e.target) + '</div></div>' +
+        '<div class="stat"><div class="label">Capaian</div><div class="value num">' + fmtPct(e.achievement) + '</div><div class="xs muted num">' + fmtN(e.actual) + unitPct(e) + ' / ' + fmtN(e.target) + unitPct(e) + '</div></div>' +
         '<div class="stat"><div class="label">Disiplin</div><div class="value num">' + fmtPct(e.discipline) + '</div><div class="xs muted">' + e.reportedDays + ' dari ' + e.workdays + ' hari kerja</div></div>' +
         (e.att ? '<div class="stat"><div class="label">Kehadiran</div><div class="value num">' + fmtPct(e.attendance) + '</div><div class="xs muted">' + e.att.onTime + ' tepat · ' + e.att.late + ' telat · ' + e.att.alpa + ' alpa · denda Rp ' + fmtN(e.att.fines) + '</div></div>'
           : '<div class="stat"><div class="label">Periode</div><div class="bold">' + esc(fmtDate(res.from)) + ' – ' + esc(fmtDate(res.to)) + '</div></div>') + '</div>' +
         (e.excusedDays ? '<div class="notice small mt">' + e.excusedDays + ' hari izin/sakit/cuti yang disetujui tidak dihitung dalam target periode ini.</div>' : '') +
         (e.outcome != null ? '<div class="notice small mt">' + icon('trend').replace('<svg ', '<svg width="14" height="14" style="vertical-align:-2px" ') + ' <span>Hasil channel:</span> <b>' + fmtPct(e.outcome) + '</b> <span>— pertumbuhan views & subscriber dibanding target bulanan.</span></div>' : '') +
         '<div class="card-head mt"><h3>Output harian</h3><div class="legend"><span><i style="background:var(--accent)"></i>Aktual</span><span><i class="dash"></i>Target</span></div></div><div id="kpi-chart"></div>' +
-        '<h3 class="mt mb">Per channel</h3><div class="table-wrap"><table class="table"><thead><tr><th>Channel</th><th class="num">Target</th><th class="num">Aktual</th><th class="num">Capaian</th><th class="num" title="Video yang terdeteksi terbit di YouTube pada periode ini (yang memenuhi durasi minimal channel)">Upload YT</th>' + (anyOut ? '<th class="num">Hasil channel</th>' : '') + '</tr></thead><tbody>' + chRows + '</tbody></table></div>',
+        '<h3 class="mt mb">Per channel</h3><div class="table-wrap"><table class="table"><thead><tr><th>Channel</th><th class="num">Target</th><th class="num">Aktual</th><th class="num">Capaian</th><th class="num" title="Video yang terdeteksi terbit di YouTube pada periode ini (yang memenuhi durasi minimal channel)">Upload YT</th>' + (anyOut ? '<th class="num">Hasil channel</th>' : '') + '</tr></thead><tbody>' + chRows + '</tbody></table></div>' + workDetailHtml(e.name, res.from, res.effTo < res.from ? res.from : res.effTo),
       mount: function () {
         Charts.bars($('#kpi-chart'), {
           labels: days, values: days.map(function (d) { return e.daily[d] ? e.daily[d].a : 0; }),
@@ -1046,7 +1161,7 @@
     var counts = { ALL: list.length };
     list.forEach(function (c) { counts[c.division] = (counts[c.division] || 0) + 1; });
     if (st.division !== 'ALL') list = list.filter(function (c) { return c.division === st.division; });
-    if (st.q) { var q = st.q.toLowerCase(); list = list.filter(function (c) { return (chTitle(c) + ' ' + c.name + ' ' + c.employees.join(' ')).toLowerCase().indexOf(q) >= 0; }); }
+    if (st.q) { var q = st.q.toLowerCase(); list = list.filter(function (c) { return (chTitle(c) + ' ' + c.name + ' ' + c.employees.join(' ') + ' ' + membersOf(c).map(function (m) { return m.label; }).join(' ')).toLowerCase().indexOf(q) >= 0; }); }
     function val(c, k) { var y = ytOf(c); if (k === 'name') return chTitle(c).toLowerCase(); if (!y || y.status !== 'OK') return -1; return k === 'views' ? y.views : k === 'growth' ? (y.dViews || 0) : y.subs; }
     list.sort(function (a, b) { if (st.sort === 'name') return val(a, 'name').localeCompare(val(b, 'name')); return val(b, st.sort) - val(a, st.sort); });
     var last = S.yt && S.yt.lastSync;
@@ -1060,13 +1175,13 @@
 
     var cards = list.map(function (c) {
       var y = ytOf(c), ok = y && y.status === 'OK';
-      var target = channelTargetToday(c), actual = channelActual(c.key, t, t);
       return '<a class="card ch-card" href="#/channel/' + encodeURIComponent(c.key) + '" style="color:inherit;text-decoration:none">' +
-        '<div class="ch-top">' + avatar(c, 'lg') + '<div class="col grow"><div class="bold ellipsis" style="font-size:15px">' + esc(chTitle(c)) + '</div>' +
-        '<div class="xs muted ellipsis">' + esc(chTitle(c) !== c.name ? c.name : (y && y.handle) || c.type) + '</div><div class="row" style="gap:6px;margin-top:2px">' + divBadge(c.division) + (c.minDuration ? '<span class="badge st-none">' + icon('clock') + '≥' + fmtN(c.minDuration) + 'm</span>' : '') + '<span class="xs text-2 ellipsis">' + esc(c.employees.map(cap).join(', ') || '—') + '</span></div></div></div>' +
+        '<div class="ch-top">' + avatar(c, 'lg') + '<div class="col grow" style="min-width:0"><div class="bold ellipsis" style="font-size:15px">' + esc(chTitle(c)) + '</div>' +
+        '<div class="xs muted ellipsis">' + esc(chTitle(c) !== c.name ? c.name : (y && y.handle) || c.type) + '</div><div class="row" style="gap:6px;margin-top:2px">' + divBadge(c.division) + (c.minDuration ? '<span class="badge st-none">' + icon('clock') + '≥' + fmtN(c.minDuration) + 'm</span>' : '') + '</div></div></div>' +
+        memberChips(c) +
         (ok ? '<div class="ch-stats"><div><div class="v num">' + fmtC(y.views) + '</div><div class="l">Views</div></div><div><div class="v num ' + (y.dViews > 0 ? 'up' : '') + '">' + (y.dViews == null ? '—' : signed(y.dViews, true)) + '</div><div class="l">' + ytWin() + '</div></div><div><div class="v num">' + fmtC(y.subs) + '</div><div class="l">Subscriber</div></div></div>'
           : '<div class="notice small">' + icon('alert').replace('<svg ', '<svg width="14" height="14" style="vertical-align:-2px" ') + ' ' + (y && y.status === 'NOT_FOUND' ? 'Channel tidak ditemukan dari link.' : c.link ? 'Menunggu sinkron YouTube.' : esc(c.linkNote || 'Link channel belum tersedia.')) + '</div>') +
-        '<div><div class="row between xs muted" style="margin-bottom:4px"><span>Output hari ini</span><span class="num">' + fmtN(actual) + ' / ' + fmtN(target) + '</span></div>' + bar(target ? actual / target : null, true) + '</div></a>';
+        channelWorkSummary(c, t) + '</a>';
     }).join('');
 
     return pageHead('Channel YouTube', 'Pantau views setiap channel & video tanpa YouTube Studio. Sinkron otomatis tiap jam · terakhir <b>' + relTime(last) + '</b>' + (S.yt && S.yt.windowHours && S.yt.windowHours < 23 ? ' · pertumbuhan dihitung dari ' + S.yt.windowHours + ' jam terakhir (24 jam penuh tersedia setelah 1 hari)' : ' · angka "' + ytWin() + '" = views yang bertambah dalam 24 jam terakhir') + '.', actions) +
@@ -1079,12 +1194,11 @@
     var y = ytOf(c), ok = y && y.status === 'OK', t = today();
     var h = ok ? S.hist[y.id] : null;
     if (ok && !h) loadHistory(y.id);
-    var target = channelTargetToday(c), actual = channelActual(c.key, t, t);
 
     var head = '<a class="btn ghost sm mb" href="#/channels">' + icon('back') + 'Semua channel</a>' +
-      '<div class="card"><div class="row wrap gap-lg"><div class="row grow" style="min-width:240px">' + avatar(c, 'lg') + '<div class="col grow"><h1 class="ellipsis" style="font-size:22px">' + esc(chTitle(c)) + '</h1>' +
+      '<div class="card"><div class="row wrap gap-lg"><div class="row grow" style="min-width:240px">' + avatar(c, 'lg') + '<div class="col grow" style="min-width:0"><h1 class="ellipsis" style="font-size:22px">' + esc(chTitle(c)) + '</h1>' +
       '<div class="small muted ellipsis">' + esc(c.name) + (y && y.handle ? ' · ' + esc(y.handle) : '') + '</div><div class="row wrap" style="gap:6px;margin-top:4px">' + divBadge(c.division) +
-      c.employees.map(function (n) { return '<span class="badge st-none">' + icon('users') + esc(cap(n)) + '</span>'; }).join('') +
+      membersOf(c).map(function (m) { return memberChip(m, S.user.name); }).join('') +
       (c.minDuration ? '<span class="badge st-warning">' + icon('clock') + 'Min. ' + fmtN(c.minDuration) + ' menit / video</span>' : '') + '</div></div></div>' +
       '<div class="row wrap">' + (c.link ? '<a class="btn ghost" href="' + esc(c.link) + '" target="_blank" rel="noopener">' + icon('ext') + 'Buka di YouTube</a>' : '') +
       (isAdmin() ? '<button class="btn ghost" data-act="edit-channel" data-key="' + esc(c.key) + '">' + icon('edit') + 'Ubah</button>' : '') + '</div></div>' +
@@ -1094,10 +1208,11 @@
       statTile('Total views', ok ? fmtC(y.views) : '—', ok ? y.dViews : null, 'eye') +
       statTile('Subscriber', ok ? fmtC(y.subs) : '—', ok ? y.dSubs : null, 'subs') +
       statTile('Jumlah video', ok ? fmtN(y.videos) : '—', null, 'video', 'Upload hari ini: ' + (ok ? uploadsIn(c, t, t) : '—')) +
-      '<div class="card stat"><div class="label"><span class="stat-icon">' + icon('kpi') + '</span>Output hari ini</div><div class="value num">' + fmtN(actual) + '<span class="muted" style="font-size:16px"> / ' + fmtN(target) + '</span></div>' + bar(target ? actual / target : null) + '</div></div>';
+      workTile(c, t) + '</div>';
+    var work = teamCard(c) + channelProjectsCard(c);
 
     if (!ok) {
-      return head + tiles + '<div class="card mt"><div class="empty">' + icon('yt') + '<div>' + (c.link ? (y && y.status === 'NOT_FOUND' ? 'Channel tidak ditemukan dari link ini. Periksa link di spreadsheet.' : 'Data YouTube belum tersedia. Tunggu sinkron berikutnya.') : esc(c.linkNote || 'Link channel belum diisi di spreadsheet.')) + '</div></div></div>' + channelReports(c);
+      return head + tiles + work + '<div class="card mt"><div class="empty">' + icon('yt') + '<div>' + (c.link ? (y && y.status === 'NOT_FOUND' ? 'Channel tidak ditemukan dari link ini. Periksa link di spreadsheet.' : 'Data YouTube belum tersedia. Tunggu sinkron berikutnya.') : esc(c.linkNote || 'Link channel belum diisi di spreadsheet.')) + '</div></div></div>' + channelReports(c);
     }
 
     var charts = '<div class="grid grid-2 mt"><div class="card"><div class="card-head"><h2>Views bertambah per hari</h2><span class="sub">30 hari</span></div><div id="ch-gain">' + (h && h !== 'loading' ? '' : '<div class="skeleton" style="height:200px"></div>') + '</div></div>' +
@@ -1139,12 +1254,87 @@
       (vids.length ? '<div class="table-wrap"><table class="table"><thead><tr><th>Video</th><th class="num">Views</th><th class="num">' + ytWin() + '</th><th class="num">Likes</th><th class="num">Komentar</th><th>Tren 14 hari</th></tr></thead><tbody>' + rows + '</tbody></table></div>' : '<div class="empty">Belum ada video.</div>') +
       '<div class="xs muted" style="padding:10px 20px 16px">Memantau ' + esc(cfg().YT_MAX_VIDEOS || 50) + ' video terbaru · pertumbuhan dibanding snapshot ' + esc(S.yt && S.yt.prevDate ? fmtDate(S.yt.prevDate) : 'sebelumnya') + '.</div></div>';
 
-    return head + tiles + outcomeCard(c) + charts + vidCard + channelReports(c);
+    return head + tiles + work + outcomeCard(c) + charts + vidCard + channelReports(c);
   }
 
   function channelReports(c) {
     var list = D().reports.filter(function (r) { return r.channel === c.key; }).sort(sortReports).slice(0, 10);
     return '<div class="card mt"><div class="card-head"><h2>Laporan terbaru channel ini</h2></div>' + reportList(list, true) + '</div>';
+  }
+
+  /* ---------- 1.8: pekerjaan di dalam channel ---------- */
+  /** Anggota mode jumlah yang boleh dilihat capaiannya (staff: hanya dirinya). */
+  function visibleCountMembers(c) { var me = S.user && S.user.name; return seeAll() ? countMembers(c) : countMembers(c).filter(function (m) { return m.name === me; }); }
+  function visibleProgMembers(c) { var me = S.user && S.user.name; return seeAll() ? progMembers(c) : progMembers(c).filter(function (m) { return m.name === me; }); }
+  function namesTxt(list) { return list.map(function (m) { return cap(m.name); }).join(', '); }
+  /** Ringkasan di kartu daftar channel: output (mode jumlah) dan/atau proyek (mode progres). */
+  function channelWorkSummary(c, t) {
+    var cm = visibleCountMembers(c), pm = visibleProgMembers(c), out = '';
+    if (cm.length) {
+      var target = cm.reduce(function (s, m) { return s + channelTargetToday(c, m.name); }, 0);
+      var actual = seeAll() ? channelActual(c.key, t, t) : channelActual(c.key, t, t, S.user.name);
+      out += '<div><div class="row between xs muted" style="margin-bottom:4px;gap:8px"><span class="ellipsis">' + (progMembers(c).length ? 'Output hari ini (' + esc(namesTxt(cm)) + ')' : 'Output hari ini') + '</span><span class="num nowrap">' + fmtN(actual) + ' / ' + fmtN(target) + '</span></div>' + bar(target ? actual / target : null, true) + '</div>';
+    }
+    if (pm.length) {
+      var names = {}; pm.forEach(function (m) { names[m.name] = 1; });
+      var ps = projSummary(channelProjects(c).filter(function (p) { return names[p.employee]; }));
+      out += '<div' + (cm.length ? ' style="margin-top:10px"' : '') + '><div class="row between xs muted" style="margin-bottom:4px;gap:8px"><span class="ellipsis">Progres proyek (' + esc(namesTxt(pm)) + ')</span><span class="num nowrap">' + (ps.n ? Math.round(ps.avg) + '%' : '—') + '</span></div>' + bar(ps.avg == null ? null : ps.avg / 100, true) +
+        '<div class="xs muted" style="margin-top:3px">' + (ps.n ? ps.n + ' proyek aktif' : 'Belum ada proyek aktif') + '</div></div>';
+    }
+    return out;
+  }
+  /** Tile ke-4 di detail channel. */
+  function workTile(c, t) {
+    var cm = visibleCountMembers(c), pm = visibleProgMembers(c);
+    if (cm.length || !pm.length) {
+      var target = cm.reduce(function (s, m) { return s + channelTargetToday(c, m.name); }, 0);
+      var actual = seeAll() ? channelActual(c.key, t, t) : channelActual(c.key, t, t, S.user.name);
+      return '<div class="card stat"><div class="label"><span class="stat-icon">' + icon('kpi') + '</span>' + (seeAll() ? 'Output hari ini' : 'Output saya hari ini') + '</div><div class="value num">' + fmtN(actual) + '<span class="muted" style="font-size:16px"> / ' + fmtN(target) + '</span></div>' + bar(target ? actual / target : null) + '</div>';
+    }
+    var names = {}; pm.forEach(function (m) { names[m.name] = 1; });
+    var ps = projSummary(channelProjects(c).filter(function (p) { return names[p.employee]; }));
+    return '<div class="card stat"><div class="label"><span class="stat-icon">' + icon('trend') + '</span>Proyek aktif</div><div class="value num">' + ps.n + '</div>' + bar(ps.avg == null ? null : ps.avg / 100) +
+      '<div class="xs muted mt-sm">' + (ps.n ? 'rata-rata ' + Math.round(ps.avg) + '%' : 'Belum ada proyek aktif') + '</div></div>';
+  }
+  /** Kartu "Tim & pembagian tugas": siapa mengerjakan apa + capaian hari ini & bulan ini. */
+  function teamCard(c) {
+    var list = membersOf(c), me = S.user && S.user.name, all = seeAll();
+    if (!list.length && !isAdmin()) return '';
+    var kT = kpiPeriod('today'), kM = kpiPeriod('month');
+    function rowOf(k, name) { var e = k.list.filter(function (x) { return x.name === name; })[0]; return e ? e.channels.filter(function (x) { return x.key === c.key; })[0] || null : null; }
+    var rows = list.map(function (m) {
+      var vis = all || m.name === me, td = vis ? rowOf(kT, m.name) : null, mo = vis ? rowOf(kM, m.name) : null;
+      var unit = m.mode === 'PROGRESS' ? ' unit' : '';
+      var how = m.mode === 'PROGRESS' ? 'Dihitung dari progres proyek (1 unit = 1 hari kerja)' : 'Dihitung dari jumlah video · target ' + fmtN(m.target) + ' / ' + periodWord();
+      var stats = vis ? '<div class="team-stats"><div><div class="xs muted">Hari ini</div><b class="num">' + (td ? fmtN(td.actual) + ' / ' + fmtN(td.target) + unit : '—') + '</b></div>' +
+        '<div><div class="xs muted">Bulan ini</div><b class="num">' + (mo ? fmtN(mo.actual) + ' / ' + fmtN(mo.target) + unit : '—') + '</b></div>' +
+        '<div class="grow team-bar">' + bar(mo ? mo.achievement : null) + '<div class="xs muted num" style="text-align:right">' + fmtPct(mo && mo.achievement) + '</div></div></div>' : '';
+      return '<div class="team-row">' + personAvatar(m.name) + '<div class="col grow" style="min-width:0"><div class="row wrap" style="gap:6px"><b>' + esc(cap(m.name)) + '</b>' +
+        (m.label ? '<span class="badge mem-chip' + (m.mode === 'PROGRESS' ? ' prog' : '') + '">' + icon(m.mode === 'PROGRESS' ? 'trend' : 'video') + esc(m.label) + '</span>' : '') +
+        (m.name === me ? '<span class="xs muted">(kamu)</span>' : '') + '</div><div class="xs muted">' + how + '</div>' +
+        (m.notes ? '<div class="xs text-2" translate="no">' + esc(m.notes) + '</div>' : '') + stats + '</div></div>';
+    }).join('');
+    var hint = !list.length ? '<div class="empty">' + icon('users') + '<div>Belum ada yang memegang channel ini.</div></div>'
+      : list.length > 1 && list.some(function (m) { return !m.custom; }) && isAdmin() ? '<div class="notice small mt-sm">Pembagian tugas belum diatur — semua orang memakai cara hitung channel & target dibagi rata. Tekan "Atur pembagian tugas" untuk menentukan jenis video & target tiap orang.</div>' : '';
+    return '<div class="card mt"><div class="card-head"><div class="col"><h2 class="row">' + icon('users') + 'Tim & pembagian tugas</h2><span class="sub">Siapa mengerjakan apa di channel ini</span></div>' +
+      (isAdmin() ? '<button class="btn ghost sm" data-act="edit-channel" data-key="' + esc(c.key) + '">' + icon('edit') + 'Atur pembagian tugas</button>' : '') + '</div>' +
+      '<div class="team-list">' + rows + '</div>' + hint +
+      (!all && list.some(function (m) { return m.name !== me; }) ? '<div class="xs muted mt-sm">Capaian rekan kerja bersifat privat.</div>' : '') + '</div>';
+  }
+  /** Kartu "Proyek video channel ini": progres long-form/shorts yang sedang dikerjakan + riwayat. */
+  function channelProjectsCard(c) {
+    var me = S.user && S.user.name, pm = progMembers(c), mineProg = pm.some(function (m) { return m.name === me; });
+    var list = channelProjects(c);
+    if (!list.length && !(pm.length && (seeAll() || mineProg))) return '';
+    var act = list.filter(function (p) { return p.status === 'ACTIVE'; }).sort(function (a, b) { return (a.deadline || '9') < (b.deadline || '9') ? -1 : 1; });
+    var done = list.filter(function (p) { return p.status !== 'ACTIVE'; }).sort(function (a, b) { return (b.end || '').localeCompare(a.end || ''); }).slice(0, 10);
+    var canAdd = (isAdmin() && pm.length) || mineProg;
+    return '<div class="card mt"><div class="card-head"><div class="col"><h2 class="row">' + icon('video') + 'Proyek video channel ini</h2><span class="sub">' + (pm.length ? 'Dikerjakan oleh ' + esc(namesTxt(pm)) + ' · 1 long-form = ' + esc(cfg().LONGFORM_DAYS || 3) + ' hari kerja' : 'Riwayat proyek') + '</span></div>' +
+      (canAdd ? '<button class="btn sm" data-act="project-new" data-ch="' + esc(c.key) + '">' + icon('plus') + 'Proyek baru</button>' : '') + '</div>' +
+      (act.length ? act.map(function (p) { return projLine(p, projActions(p), projExtra(p)); }).join('')
+        : '<div class="empty">' + icon('video') + '<div>Belum ada proyek aktif.</div>' + (pm.length ? '<div class="xs">Target progres baru berjalan setelah proyek dibuat. Tekan "Proyek baru" setiap ada video yang mulai dikerjakan.</div>' : '') + '</div>') +
+      (done.length ? '<details class="mt-sm"><summary class="small bold" style="cursor:pointer">Proyek selesai / dibatalkan (' + done.length + ')</summary><div class="mt-sm">' + done.map(function (p) { return projLine(p, isAdmin() ? projActions(p) : '', projHistory(p)); }).join('') + '</div></details>' : '') +
+      (!seeAll() && pm.some(function (m) { return m.name !== me; }) ? '<div class="xs muted mt-sm">Hanya proyekmu yang terlihat.</div>' : '') + '</div>';
   }
 
   /* =========================================================
@@ -1302,9 +1492,12 @@
     }).catch(function (err) {
       var denied = err && (err.name === 'NotAllowedError' || err.name === 'SecurityError');
       var none = err && (err.name === 'NotFoundError' || err.name === 'OverconstrainedError');
-      msg.innerHTML = denied ? '<b>Akses kamera ditolak.</b><br>Izinkan kamera: klik ikon 🔒 di sebelah alamat web → Kamera → Izinkan, lalu tekan "Coba lagi".'
+      var busy = err && (err.name === 'NotReadableError' || err.name === 'AbortError' || err.name === 'TrackStartError');
+      msg.innerHTML = denied ? '<b>Akses kamera ditolak.</b><br>Izinkan kamera: klik ikon 🔒 di sebelah alamat web → Kamera → Izinkan, lalu tekan "Coba lagi".' +
+          (isDesktop() ? '' : '<br><span class="xs">Di HP: Pengaturan → Aplikasi → Chrome (atau Safari) → Izin → Kamera → Izinkan.</span>')
         : none ? '<b>Kamera tidak ditemukan.</b><br>Gunakan HP atau laptop yang punya kamera untuk presensi.'
-          : 'Kamera tidak bisa dibuka (' + esc(err && err.message || 'error') + ').';
+          : busy ? '<b>Kamera sedang dipakai aplikasi lain.</b><br>Tutup aplikasi lain yang memakai kamera (Zoom, WhatsApp, kamera), lalu tekan "Coba lagi".'
+            : 'Kamera tidak bisa dibuka (' + esc(err && err.message || 'error') + ').';
       msg.classList.remove('hidden');
       $('#ci-retry', m).classList.remove('hidden');
     });
@@ -1458,18 +1651,32 @@
     $$('[data-xn]', box).forEach(function (el) { el.oninput = function () { co.extra[+el.dataset.xn].note = el.value; }; });
     $$('[data-xt]', box).forEach(function (el) { el.oninput = function () { co.extra[+el.dataset.xt].text = el.value; }; });
     $$('[data-xr]', box).forEach(function (el) { el.onclick = function () { co.extra.splice(+el.dataset.xr, 1); renderReportEditor(m); }; });
+    if (S.coSave) S.coSave();
   }
   function checkOutFlow() {
     var c = attCfg(), t = today(), work = KPI.isWorkday(t, c), nm = nowMin(), me = S.user.name;
     var rec = attOf(me, t);
     if (!rec) return toast('Kamu belum presensi masuk hari ini.', 'error');
+    if (rec.out) return toast('Kamu sudah presensi pulang jam ' + t5(rec.out) + '.');
     var todo = rec.todo || [];
-    var mine = myChannels().filter(function (ch) { return ch.kpiMode !== 'PROGRESS'; });
+    var mine = myChannels().filter(function (ch) { return !isProgFor(ch, me); });
     S.co = {
       tasks: todo.map(function (x) { return { text: x.text, channel: x.channel || '', progress: null, note: '' }; }),
       extra: todo.length ? [] : [{ text: '', progress: null, note: '' }],
-      outputs: mine.map(function (ch) { return { channel: ch.key, qty: 0, links: '' }; }), ot: false, projects: {}
+      outputs: mine.map(function (ch) { return { channel: ch.key, qty: 0, links: '', gen: 0, genFor: 'HARI_INI', edit: 0, editPct: '' }; }), ot: false, projects: {}, taskUpd: {}
     };
+    // 1.8: pulihkan draf presensi pulang (hari yang sama)
+    var dr = draftGet('co'), restored = false;
+    if (dr && dr.date === t && dr.co) {
+      S.co.tasks.forEach(function (x, i) { var y = (dr.co.tasks || [])[i]; if (y && y.text === x.text) { x.progress = y.progress == null ? null : y.progress; x.note = y.note || ''; if (x.progress != null || x.note) restored = true; } });
+      var ex = (dr.co.extra || []).filter(function (x) { return String(x.text || '').trim() || x.progress != null; });
+      if (ex.length) { S.co.extra = ex.map(function (x) { return { text: x.text || '', progress: x.progress == null ? null : x.progress, note: x.note || '' }; }); restored = true; }
+      S.co.outputs.forEach(function (o) { var y = (dr.co.outputs || []).filter(function (z) { return z.channel === o.channel; })[0]; if (y) { o.qty = Math.max(0, Number(y.qty) || 0); o.links = y.links || ''; o.gen = Math.max(0, Number(y.gen) || 0); o.genFor = y.genFor === 'BESOK' ? 'BESOK' : 'HARI_INI'; o.edit = Math.max(0, Number(y.edit) || 0); o.editPct = y.editPct == null ? '' : y.editPct; if (o.qty || o.links || o.gen || o.edit) restored = true; } });
+      Object.keys(dr.co.projects || {}).forEach(function (id) { if (activeProjectsOf(me).some(function (p) { return p.id === id; })) { S.co.projects[id] = dr.co.projects[id]; restored = true; } });
+    }
+    if (dr && dr.date === t && dr.co) Object.keys(dr.co.taskUpd || {}).forEach(function (id) { if (tasksOf(me).some(function (x) { return x.id === id; })) { S.co.taskUpd[id] = dr.co.taskUpd[id]; restored = true; } });
+    function saveCoDraft() { if (S.co) draftSet('co', { date: t, co: { tasks: S.co.tasks, extra: S.co.extra, outputs: S.co.outputs, projects: S.co.projects, taskUpd: S.co.taskUpd } }); }
+    S.coSave = saveCoDraft;
     var early = work && nm < c.workEnd, askOt = !work || nm > c.workEnd;
     var otOpts = leaders('MANAGER').map(function (e) { return [e.name, 'Manager ' + cap(e.name)]; })
       .concat(D().employees.filter(function (e) { return e.role === 'ADMIN' && !KPI.isLeader(e) && e.name !== me; }).map(function (e) { return [e.name, 'Admin ' + cap(e.name)]; }))
@@ -1477,29 +1684,35 @@
       .concat([['Inisiatif sendiri', 'Inisiatif sendiri'], ['LAINNYA', 'Lainnya…']]);
     var outHtml = mine.length ? '<h3 class="mt mb">Output untuk KPI</h3><div class="xs muted mb">Jumlah yang selesai hari ini per channel (dipakai untuk menghitung capaian KPI). Isi 0 jika tidak ada.</div>' +
       mine.map(function (ch, i) {
-        var already = channelActual(ch.key, t, t);
-        return '<div class="out-row"><div class="col grow" style="min-width:160px"><span class="bold ellipsis">' + esc(chTitle(ch)) + '</span><span class="xs muted">Target ' + fmtN(channelTargetToday(ch)) + (already ? ' · sudah dilaporkan ' + fmtN(already) : '') + (ch.minDuration ? ' · min. ' + ch.minDuration + ' menit/video' : '') + '</span></div>' +
-          '<div class="stepper" style="width:140px"><button type="button" data-oq="' + i + '" data-d="-1">−</button><input type="number" min="0" inputmode="numeric" data-oi="' + i + '" value="0"><button type="button" data-oq="' + i + '" data-d="1">+</button></div>' +
-          '<input class="input" data-ol="' + i + '" placeholder="Link video (opsional, pisahkan dengan spasi)" style="flex:1 1 220px"></div>';
+        var already = channelActual(ch.key, t, t, me), mm = memberOf(ch, me), o = S.co.outputs[i];
+        return '<div class="out-row"><div class="col grow" style="min-width:160px"><span class="bold ellipsis">' + esc(chTitle(ch)) + (mm && mm.label ? ' <span class="badge st-none">' + esc(mm.label) + '</span>' : '') + '</span><span class="xs muted">Target ' + fmtN(channelTargetToday(ch, me)) + (already ? ' · sudah dilaporkan ' + fmtN(already) : '') + (ch.minDuration ? ' · min. ' + ch.minDuration + ' menit/video' : '') + '</span></div>' +
+          '<div class="stepper" style="width:140px"><button type="button" data-oq="' + i + '" data-d="-1" aria-label="Kurangi">−</button><input type="number" min="0" inputmode="numeric" data-oi="' + i + '" value="' + esc(o.qty) + '"><button type="button" data-oq="' + i + '" data-d="1" aria-label="Tambah">+</button></div>' +
+          '<input class="input" data-ol="' + i + '" value="' + esc(o.links) + '" placeholder="Link video (opsional, pisahkan dengan spasi)" style="flex:1 1 220px">' + outDetailHtml(o, i) + '</div>';
       }).join('') : '';
     openModal({
       title: 'Presensi pulang & laporan akhir', wide: true,
-      body: '<div class="notice small mb">Masuk ' + t5(rec.in) + ' · sekarang ' + hm(nm) + ' ' + tzLabel() + '. Isi progres setiap pekerjaan: <b>Selesai (100%)</b>, <b>Revisi (90%)</b>, atau <b>On progress (10–80%)</b>.</div>' +
+      body: (restored ? '<div class="notice small mb">📝 Isian yang belum terkirim tadi dipulihkan.</div>' : '') +
+        '<div class="notice small mb">Masuk ' + t5(rec.in) + ' · sekarang ' + hm(nm) + ' ' + tzLabel() + '. Isi progres setiap pekerjaan: <b>Selesai (100%)</b>, <b>Revisi (90%)</b>, atau <b>On progress (10–80%)</b>.</div>' +
         '<div class="row between wrap"><h3>Progres pekerjaan</h3><span class="small bold" id="co-avg"></span></div><div id="co-tasks" class="mt-sm"></div>' +
-        '<button type="button" class="btn ghost sm mt-sm" id="co-add">' + icon('plus') + 'Tambah pekerjaan lain</button>' + checkoutProjectsHtml() + outHtml +
+        '<button type="button" class="btn ghost sm mt-sm" id="co-add">' + icon('plus') + 'Tambah pekerjaan lain</button>' + checkoutProjectsHtml() + checkoutTasksHtml() + outHtml +
         (askOt ? '<h3 class="mt mb">Lembur</h3><div class="seg mb"><button class="active" data-ot="0" type="button">Tidak lembur</button><button data-ot="1" type="button">Ya, saya lembur</button></div>' +
           '<div id="ot-fields" class="hidden"><div class="field"><label>Lembur untuk apa?</label><textarea class="input" id="ot-reason" rows="2" placeholder="Misal: render 5 video, revisi thumbnail klien…"></textarea></div>' +
           '<div class="field"><label>Atas perintah siapa?</label><select class="input" id="ot-by">' + otOpts.map(function (o) { return '<option value="' + esc(o[0]) + '">' + esc(o[1]) + '</option>'; }).join('') + '</select><input class="input mt-sm hidden" id="ot-by-other" placeholder="Tulis nama yang memerintahkan"></div></div>' : '') +
         (early ? '<h3 class="mt mb">Pulang lebih awal</h3><div class="field"><label>Alasan (belum jam ' + hm(c.workEnd) + ')</label><textarea class="input" id="early-note" rows="2" placeholder="Misal: ke dokter, urusan keluarga…"></textarea></div>' : ''),
       foot: '<button class="btn ghost" data-act="modal-close">Batal</button><button class="btn" id="co-submit">' + icon('logout') + 'Kirim laporan & presensi pulang</button>',
-      onClose: function () { S.co = null; },
+      onClose: function () { S.co = null; S.coSave = null; },
       mount: function (m) {
         renderReportEditor(m);
         bindProgressInputs(m, 'co', function (id, v) { S.co.projects[id] = v; });
+        // simpan draf setiap ada perubahan (handler elemen jalan dulu, lalu event naik ke modal)
+        m.addEventListener('input', function () { if (S.coSave) S.coSave(); });
+        m.addEventListener('click', function () { if (S.coSave) S.coSave(); });
         $('#co-add', m).onclick = function () { S.co.extra.push({ text: '', progress: null, note: '' }); renderReportEditor(m); var l = $$('[data-xt]', m); if (l.length) l[l.length - 1].focus(); };
         $$('[data-oq]', m).forEach(function (b) { b.onclick = function () { var i = +b.dataset.oq, inp = $('[data-oi="' + i + '"]', m); var v = Math.max(0, (Number(inp.value) || 0) + Number(b.dataset.d)); inp.value = v; S.co.outputs[i].qty = v; }; });
         $$('[data-oi]', m).forEach(function (el) { el.oninput = function () { S.co.outputs[+el.dataset.oi].qty = Math.max(0, Number(el.value) || 0); }; });
         $$('[data-ol]', m).forEach(function (el) { el.oninput = function () { S.co.outputs[+el.dataset.ol].links = el.value; }; });
+        bindOutDetail(m);
+        bindProgressInputs(m, 'ct', function (id, v) { S.co.taskUpd[id] = v; });
         $$('[data-ot]', m).forEach(function (b) {
           b.onclick = function () {
             S.co.ot = b.dataset.ot === '1';
@@ -1515,7 +1728,16 @@
           if (!tasks.length) return toast('Isi minimal 1 pekerjaan.', 'error');
           var miss = tasks.filter(function (x) { return x.progress == null; })[0];
           if (miss) return toast('Pilih progres untuk "' + miss.text + '".', 'error');
-          var payload = { tasks: tasks, outputs: co.outputs.filter(function (o) { return o.qty > 0; }) };
+          var badOut = co.outputs.filter(function (o) { return o.edit > 0 && (o.editPct === '' || o.editPct == null || !(Number(o.editPct) >= 0 && Number(o.editPct) <= 100)); })[0];
+          if (badOut) return toast('Isi progres editing (0–100%) untuk ' + chTitle(channelByKey(badOut.channel)) + '.', 'error');
+          var payload = { tasks: tasks, outputs: co.outputs.filter(function (o) { return o.qty > 0 || o.gen > 0 || o.edit > 0; }).map(function (o) {
+            return { channel: o.channel, qty: o.qty, links: o.links, gen: o.gen, genFor: o.genFor, edit: o.edit, editPct: o.edit > 0 ? Number(o.editPct) : '' };
+          }) };
+          payload.taskUpdates = Object.keys(co.taskUpd).map(function (id) {
+            var tk = tasksAll().filter(function (x) { return x.id === id; })[0], v = co.taskUpd[id];
+            if (!tk) return null;
+            return tk.mode === 'COUNT' ? (v > 0 ? { id: id, qty: v } : null) : (v !== tk.progress ? { id: id, progress: v } : null);
+          }).filter(Boolean);
           payload.projects = Object.keys(co.projects).map(function (id) {
             var pj = projectsAll().filter(function (x) { return x.id === id; })[0];
             return pj && pj.type === 'SHORTS' ? { id: id, doneQty: co.projects[id] } : { id: id, progress: co.projects[id] };
@@ -1528,8 +1750,10 @@
             payload.overtime = { reason: reason, by: by };
           }
           if (early) payload.earlyNote = $('#early-note', m).value;
+          if (btn.disabled) return;
           btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Mengirim…';
           API.call('checkOut', payload).then(function (r) {
+            draftClear('co'); S.coSave = null;
             upsertAtt(r.record); closeModal(); render();
             toast(r.already ? 'Kamu sudah presensi pulang jam ' + t5(r.record.out) + '.' :
               'Presensi pulang ' + t5(r.record.out) + ' · penyelesaian ' + r.completion + '%' + (r.outputsSaved ? ' · ' + r.outputsSaved + ' output tercatat' : '') + (r.overtimeMin ? ' · lembur ' + durTxt(r.overtimeMin) : '') + ' ✓');
@@ -1905,7 +2129,7 @@
     deleteEmployee: 'Hapus karyawan permanen', autoArchive: 'Arsip otomatis (hari terakhir)', updateChannel: 'Ubah channel', addChannel: 'Tambah channel',
     deleteChannel: 'Hapus channel', transferChannels: 'Alihkan channel', cancelSchedule: 'Batalkan jadwal', applySchedule: 'Jadwal dijalankan',
     savePayrollItem: 'Ubah gaji / biaya', deletePayrollItem: 'Hapus gaji / biaya', saveConfig: 'Ubah pengaturan', setAttendance: 'Koreksi absensi',
-    reviewPermission: 'Proses izin', closeAlert: 'Tutup pantauan kerja', purgeTrialData: 'Hapus data uji coba', backupNow: 'Backup sekarang'
+    reviewPermission: 'Proses izin', closeAlert: 'Tutup pantauan kerja', purgeTrialData: 'Hapus data uji coba', backupNow: 'Backup sekarang', saveTask: 'Tambah / ubah tugas khusus', deleteTask: 'Hapus tugas khusus'
   };
   function salaryOf(name) {
     return payrollAll().filter(function (x) { return x.category === 'GAJI' && up(x.name) === up(name); })[0] || null;
@@ -1942,7 +2166,7 @@
         (e.notes ? '<span class="xs muted ellipsis" style="max-width:220px" translate="no">' + esc(e.notes) + '</span>' : '') + '</div></div></td>' +
         '<td>' + posBadge(e) + '</td>' +
         '<td>' + (e.role === 'ADMIN' ? '<span class="badge st-warning">' + icon('lock') + 'Admin</span>' : e.role === 'VIEWER' ? '<span class="badge pos-MANAGER">' + icon('eye') + 'Lihat semua</span>' : '<span class="badge st-none">Staff</span>') + '</td>' +
-        '<td class="num">' + chs.length + '</td>' +
+        '<td class="nowrap"><span class="small">' + chs.length + ' channel' + (tasksOf(e.name).length ? ' · ' + tasksOf(e.name).length + ' tugas' : '') + '</span><div><button class="btn ghost sm" data-act="emp-jobs" data-name="' + esc(e.name) + '">' + icon('report') + 'Pekerjaan</button></div></td>' +
         '<td class="nowrap">' + (s ? '<b class="num">Rp ' + fmtN(s.amount) + '</b><div class="xs muted">tgl ' + esc(s.day) + '</div>' : '<span class="muted">—</span>') + '</td>' +
         (isAdmin() ? '<td>' + (e.pin ? '<button class="btn ghost sm" data-act="show-pin" data-pin="' + esc(e.pin) + '"><span class="num">••••••</span></button>' : '<span class="badge st-none">Tanpa akun</span>') + '</td>' : '') +
         '<td class="right">' + ed('<button class="btn ghost sm" data-act="edit-emp" data-name="' + esc(e.name) + '">' + icon('edit') + 'Ubah</button>') + '</td></tr>';
@@ -1954,7 +2178,7 @@
     }).join('');
     return '<div class="row between mb wrap"><p class="small muted grow">Karyawan aktif: <b>' + act.length + '</b>. Karyawan yang keluar diarsipkan: tidak bisa login, hilang dari tim & KPI, tapi riwayatnya tetap tersimpan.</p>' +
       ed('<button class="btn" data-act="edit-emp" data-name="">' + icon('plus') + 'Tambah karyawan</button>') + '</div>' +
-      '<div class="card pad-0"><div class="table-wrap"><table class="table"><thead><tr><th>Nama</th><th>Jabatan</th><th>Akses</th><th class="num">Channel</th><th>Gaji</th>' + (isAdmin() ? '<th>PIN</th>' : '') + '<th></th></tr></thead><tbody>' + rows + '</tbody></table></div></div>' +
+      '<div class="card pad-0"><div class="table-wrap"><table class="table"><thead><tr><th>Nama</th><th>Jabatan</th><th>Akses</th><th>Pekerjaan</th><th>Gaji</th>' + (isAdmin() ? '<th>PIN</th>' : '') + '<th></th></tr></thead><tbody>' + rows + '</tbody></table></div></div>' +
       (arch.length ? '<details class="card mt"><summary class="bold" style="cursor:pointer">Arsip / sudah keluar (' + arch.length + ')</summary><div class="list mt-sm">' + archRows + '</div></details>' : '');
   }
 
@@ -2022,10 +2246,10 @@
   function adminChannels() {
     var d = D();
     var rows = d.channels.map(function (c) {
-      var y = ytOf(c);
+      var y = ytOf(c), mem = membersOf(c);
       return '<tr><td><div class="row">' + avatar(c, 'sm') + '<div class="col"><span class="bold ellipsis" style="max-width:240px">' + esc(chTitle(c)) + '</span><span class="xs muted ellipsis" style="max-width:240px">' + esc(c.name) + '</span></div></div></td>' +
-        '<td>' + divBadge(c.division) + '</td><td>' + esc(c.employees.map(cap).join(', ') || '—') + '</td>' +
-        '<td class="nowrap">' + (c.kpiMode === 'PROGRESS' ? '<span class="badge pos-MANAGER">Progres long-form</span>' : '<span class="num">' + fmtN(c.target) + '</span> <span class="xs muted">/hari</span>') +
+        '<td>' + divBadge(c.division) + '</td><td>' + (mem.length ? mem.map(function (m) { return '<div class="nowrap small"><b>' + esc(cap(m.name)) + '</b>' + (m.label ? ' <span class="xs muted">· ' + esc(m.label) + '</span>' : '') + '</div>'; }).join('') : '—') + '</td>' +
+        '<td class="nowrap">' + (mem.length ? mem.map(function (m) { return '<div class="small">' + (m.mode === 'PROGRESS' ? '<span class="badge pos-MANAGER">Progres proyek</span>' : '<span class="num">' + fmtN(m.target) + '</span> <span class="xs muted">/' + periodWord() + '</span>'); }).join('</div>') + '</div>' : '<span class="num">' + fmtN(c.target) + '</span> <span class="xs muted">/' + periodWord() + '</span>') +
         (hasOutcomeTarget(c) ? '<div class="xs muted">🎯 ' + (c.targetViews ? fmtC(c.targetViews) + ' views' : '') + (c.targetViews && c.targetSubs ? ' · ' : '') + (c.targetSubs ? fmtN(c.targetSubs) + ' subs' : '') + ' / bln</div>' : '') + '</td>' +
         '<td>' + (y && y.status === 'OK' ? '<span class="badge st-good">' + icon('check') + 'Terpantau</span>' : c.link ? '<span class="badge st-warning">' + icon('alert') + (y && y.status === 'NOT_FOUND' ? 'Tidak ditemukan' : 'Menunggu sinkron') + '</span>'
           : (isAdmin() ? '<button class="btn ghost sm" data-act="edit-channel" data-key="' + esc(c.key) + '">' + icon('plus') + 'Tambah link</button>' : '<span class="badge st-none">Tanpa link</span>')) + '</td>' +
@@ -2041,30 +2265,80 @@
     c = c || { name: '', type: 'DEV CHANNEL', link: '', indicator: 'PRODUCTION', target: 2, notes: '', employees: [], minDuration: 0, kpiMode: 'COUNT' };
     var types = ['DEV CHANNEL', 'STAFF CHANNEL', 'CLIENT CHANNEL'];
     if (c.type && types.indexOf(c.type) < 0) types.push(c.type);
-    var people = activeEmployees().filter(function (e) { return e.position !== 'BOSS'; });
+    var people = activeEmployees().filter(function (e) { return e.position !== 'BOSS'; }).map(function (e) { return e.name; });
+    // anggota lama yang sudah tidak aktif tetap tampil agar tidak terhapus diam-diam
+    c.employees.forEach(function (n) { if (people.indexOf(n) < 0) people.push(n); });
+    var st = S.chTeam = { order: [], map: {} };
+    membersOf(c).forEach(function (mm) {
+      st.order.push(mm.name);
+      st.map[mm.name] = { label: mm.label || '', mode: mm.mode, target: mm.mode === 'COUNT' && mm.target != null ? Math.round(mm.target * 100) / 100 : '' };
+    });
     openModal({
       title: isNew ? 'Tambah channel' : 'Ubah channel', wide: true,
       body: '<form id="ch-form"><div class="form-row"><div class="field"><label>Nama channel</label><input class="input" name="name" value="' + esc(c.name) + '" required placeholder="@namachannel">' + (isNew ? '' : '<div class="hint">Aman diganti: laporan lama ikut pindah ke nama baru.</div>') + '</div>' +
         '<div class="field"><label>Tipe / divisi</label><select class="input" name="type">' + types.map(function (t) { return '<option' + (c.type === t ? ' selected' : '') + '>' + esc(t) + '</option>'; }).join('') + '</select></div></div>' +
         '<div class="field"><label>Link channel YouTube</label><input class="input" name="link" value="' + esc(c.link || '') + '" placeholder="https://youtube.com/@namachannel">' +
         '<div class="hint">' + (c.linkNote ? 'Isi sheet saat ini: ' + esc(c.linkNote) + '. ' : '') + 'Setelah disimpan, views langsung diambil & diperbarui otomatis tiap jam.</div></div>' +
-        '<div class="form-row"><div class="field"><label>Cara menghitung KPI</label><select class="input" name="kpiMode"><option value="COUNT"' + (c.kpiMode !== 'PROGRESS' ? ' selected' : '') + '>Jumlah video per hari (target harian)</option><option value="PROGRESS"' + (c.kpiMode === 'PROGRESS' ? ' selected' : '') + '>Progres video long-form & shorts (permintaan client)</option></select></div>' +
-        '<div class="field"><label>Target per hari <span class="muted">(mode jumlah)</span></label><input class="input" name="target" type="number" min="0" step="0.5" value="' + esc(c.target) + '"></div></div>' +
+        '<div class="field team-editor"><label>' + icon('users').replace('<svg ', '<svg width="15" height="15" style="vertical-align:-2px" ') + ' Pembagian tugas</label>' +
+        '<div class="hint" style="margin:0 0 8px">Centang siapa saja yang memegang channel ini, lalu atur jenis video & cara hitung KPI masing-masing. Satu channel boleh dipegang beberapa orang dengan pekerjaan berbeda.</div>' +
+        '<div class="chips" id="ch-people">' + people.map(function (n) {
+          var on = st.order.indexOf(n) >= 0;
+          return '<label class="chip pick' + (on ? ' active' : '') + '"><input type="checkbox" value="' + esc(n) + '"' + (on ? ' checked' : '') + '>' + esc(cap(n)) + '</label>';
+        }).join('') + '</div><div id="ch-team" class="mt-sm"></div><div class="hint" id="ch-team-sum"></div>' +
+        '<datalist id="label-list">' + JOB_LABELS.map(function (x) { return '<option value="' + esc(x) + '">'; }).join('') + '</datalist></div>' +
         '<div class="form-row"><div class="field"><label>Indikator tugas</label><input class="input" name="indicator" value="' + esc(c.indicator) + '" list="task-list2"><datalist id="task-list2">' + TASKS.map(function (x) { return '<option value="' + x + '">'; }).join('') + '</datalist></div>' +
         '<div class="field"><label>Durasi minimal per video (menit)</label><input class="input" name="minDuration" type="number" min="0" step="1" value="' + esc(c.minDuration || '') + '" placeholder="kosong = tanpa batas"></div></div>' +
         '<div class="form-row"><div class="field"><label>Target views per bulan <span class="muted">(opsional)</span></label><input class="input" name="targetViews" inputmode="numeric" value="' + esc(c.targetViews ? fmtN(c.targetViews) : '') + '" placeholder="100.000"></div>' +
         '<div class="field"><label>Target subscriber per bulan <span class="muted">(opsional)</span></label><input class="input" name="targetSubs" inputmode="numeric" value="' + esc(c.targetSubs ? fmtN(c.targetSubs) : '') + '" placeholder="500"></div></div>' +
         '<div class="hint" style="margin-top:-6px;margin-bottom:12px">Untuk KPI hasil channel (bobot ' + esc(cfg().WEIGHT_OUTCOME || 20) + '%). Kosongkan bila channel cukup dinilai dari jumlah video.</div>' +
-        '<div class="field"><label>Dipegang oleh</label><div class="chips" id="ch-people">' + people.map(function (e) {
-          var on = c.employees.indexOf(e.name) >= 0;
-          return '<label class="chip pick' + (on ? ' active' : '') + '"><input type="checkbox" value="' + esc(e.name) + '"' + (on ? ' checked' : '') + '>' + esc(cap(e.name)) + '</label>';
-        }).join('') + '</div></div>' +
         '<div class="field"><label>Catatan</label><textarea class="input" name="notes" rows="2">' + esc(c.notes) + '</textarea></div>' +
         '<div class="notice small">' + icon('wallet').replace('<svg ', '<svg width="14" height="14" style="vertical-align:-2px" ') + ' Gaji sekarang diatur per karyawan di tab <b>Karyawan</b> atau <b>Gaji & biaya</b>.</div></form>',
       foot: (isNew ? '' : '<button class="btn danger" data-act="delete-channel" data-key="' + esc(c.key) + '">' + icon('trash') + 'Hapus channel</button><span class="grow"></span>') +
         '<button class="btn ghost" data-act="modal-close">Batal</button><button class="btn" data-act="save-channel2" data-key="' + esc(key || '') + '">' + icon('check') + 'Simpan</button>',
-      mount: function (m) { $$('.chip.pick input', m).forEach(function (i) { i.onchange = function () { i.parentNode.classList.toggle('active', i.checked); }; }); }
+      onClose: function () { S.chTeam = null; },
+      mount: function (m) {
+        $$('#ch-people .chip.pick input', m).forEach(function (i) {
+          i.onchange = function () {
+            i.parentNode.classList.toggle('active', i.checked);
+            var n = i.value, at = st.order.indexOf(n);
+            if (i.checked && at < 0) { st.order.push(n); if (!st.map[n]) st.map[n] = { label: '', mode: 'COUNT', target: '' }; }
+            if (!i.checked && at >= 0) st.order.splice(at, 1);
+            renderTeamEditor(m);
+          };
+        });
+        renderTeamEditor(m);
+      }
     });
+  }
+  var JOB_LABELS = ['Shorts', 'Long-form', 'AI Drama Long-form', 'Data Comparison', 'Thumbnail', 'Variety show', 'Movie recap'];
+  /** Editor pembagian tugas di form channel: per orang → jenis video, cara hitung, target. */
+  function renderTeamEditor(m) {
+    var st = S.chTeam, box = $('#ch-team', m); if (!st || !box) return;
+    var pw = periodWord();
+    box.innerHTML = st.order.length ? st.order.map(function (n) {
+      var x = st.map[n], prog = x.mode === 'PROGRESS';
+      return '<div class="team-edit"><div class="row between wrap" style="gap:8px">' + personAvatar(n, 'sm') + '<b class="grow">' + esc(cap(n)) + '</b>' +
+        (prog ? '<span class="xs muted">Target: 1 unit / hari kerja selama ada proyek aktif</span>' : '') + '</div>' +
+        '<div class="team-edit-grid"><div class="field"><label>Jenis video / pekerjaan</label><input class="input" data-tl="' + esc(n) + '" list="label-list" value="' + esc(x.label) + '" placeholder="Misal: Shorts" maxlength="60"></div>' +
+        '<div class="field"><label>Cara hitung KPI</label><select class="input" data-tm="' + esc(n) + '"><option value="COUNT"' + (prog ? '' : ' selected') + '>Jumlah video (pakai target)</option><option value="PROGRESS"' + (prog ? ' selected' : '') + '>Progres proyek (long-form)</option></select></div>' +
+        (prog ? '' : '<div class="field"><label>Target per ' + pw + '</label><input class="input" type="number" min="0" max="1000" step="0.5" inputmode="decimal" data-tt="' + esc(n) + '" value="' + esc(x.target) + '" placeholder="0"></div>') + '</div></div>';
+    }).join('') : '<div class="notice small">Belum ada yang dipilih. Centang nama di atas.</div>';
+    $$('[data-tl]', box).forEach(function (el) { el.oninput = function () { st.map[el.dataset.tl].label = el.value; }; });
+    $$('[data-tt]', box).forEach(function (el) { el.oninput = function () { st.map[el.dataset.tt].target = el.value; teamSum(m); }; });
+    $$('[data-tm]', box).forEach(function (el) { el.onchange = function () { st.map[el.dataset.tm].mode = el.value; renderTeamEditor(m); }; });
+    teamSum(m);
+  }
+  function teamSum(m) {
+    var st = S.chTeam, el = $('#ch-team-sum', m); if (!st || !el) return;
+    var cnt = st.order.filter(function (n) { return st.map[n].mode === 'COUNT'; }), prog = st.order.length - cnt.length;
+    var tot = cnt.reduce(function (s, n) { return s + (Number(String(st.map[n].target).replace(',', '.')) || 0); }, 0);
+    el.innerHTML = st.order.length ? '<b>Total target channel: ' + fmtN(Math.round(tot * 100) / 100) + ' / ' + periodWord() + '</b> <span>(otomatis = jumlah target anggota mode jumlah)</span>' +
+      (prog ? ' · <span>' + prog + ' orang mode progres proyek</span>' : '') : '';
+  }
+  function cmpVer(a, b) {
+    var x = String(a || '').split('.'), y = String(b || '').split('.');
+    for (var i = 0; i < 3; i++) { var d = (Number(x[i]) || 0) - (Number(y[i]) || 0); if (d) return d; }
+    return 0;
   }
   function transferModal(from) {
     var withCh = activeEmployees().filter(function (e) { return D().channels.some(function (c) { return c.employees.indexOf(e.name) >= 0; }); });
@@ -2186,19 +2460,46 @@
      PROYEK VIDEO (KPI MODE PROGRESS) & PANTAUAN KERJA
      ========================================================= */
   var ALERT_TYPE = { TIDAK_ADA_PROGRES: 'Tidak ada progres', DI_BAWAH_POLA: 'Jauh di bawah pola biasanya', DI_ATAS_POLA: 'Jauh di atas pola biasanya', TURUN: 'Progres turun' };
-  function progChannelsOf(name) { return D().channels.filter(function (c) { return c.kpiMode === 'PROGRESS' && c.employees.indexOf(name) >= 0; }); }
-  function allProgChannels() { return D().channels.filter(function (c) { return c.kpiMode === 'PROGRESS'; }); }
+  /** Channel tempat orang ini bertugas mode progres (proyek video). */
+  function progChannelsOf(name) { return D().channels.filter(function (c) { return progMembers(c).some(function (m) { return m.name === name; }); }); }
+  /** Channel yang punya minimal 1 anggota mode progres. */
+  function allProgChannels() { return D().channels.filter(function (c) { return progMembers(c).length > 0; }); }
   function projectsAll() { return D().projects || []; }
   function activeProjectsOf(name) { return projectsAll().filter(function (p) { return p.employee === name && p.status === 'ACTIVE'; }); }
   function projTypeBadge(p) { return p.type === 'SHORTS' ? '<span class="badge div-STAFF">Shorts ×' + p.qty + '</span>' : '<span class="badge div-DEV">Long-form</span>'; }
-  function projLine(p, actions) {
+  function projLine(p, actions, extra) {
     var overdue = p.status === 'ACTIVE' && p.deadline && p.deadline < today();
     var ch = channelByKey(p.channel);
-    return '<div class="task-card"><div class="row between wrap" style="gap:8px"><div class="col" style="min-width:0"><div class="row wrap" style="gap:6px"><span class="bold">' + esc(p.title) + '</span>' + projTypeBadge(p) +
-      (p.status !== 'ACTIVE' ? '<span class="badge ' + (p.status === 'DONE' ? 'st-good' : 'st-none') + '">' + (p.status === 'DONE' ? 'Selesai' : 'Dibatalkan') + '</span>' : '') + '</div>' +
-      '<span class="xs muted">' + esc(cap(p.employee)) + (ch ? ' · ' + esc(chTitle(ch)) : '') + ' · mulai ' + esc(fmtDate(p.created)) + (p.deadline ? ' · <span class="' + (overdue ? 'down bold' : '') + '">deadline ' + esc(fmtDate(p.deadline)) + (overdue ? ' (lewat)' : '') + '</span>' : '') + '</span></div>' +
+    return '<div class="task-card"><div class="row between wrap" style="gap:8px"><div class="col" style="min-width:0"><div class="row wrap" style="gap:6px"><span class="bold" translate="no">' + esc(p.title) + '</span>' + projTypeBadge(p) +
+      (p.status !== 'ACTIVE' ? '<span class="badge ' + (p.status === 'DONE' ? 'st-good' : 'st-none') + '">' + (p.status === 'DONE' ? 'Selesai' : 'Dibatalkan') + '</span>' : '') + (overdue ? '<span class="badge st-critical">' + icon('alert') + 'Lewat deadline</span>' : '') + '</div>' +
+      '<span class="xs muted">' + esc(cap(p.employee)) + (ch ? ' · ' + esc(chTitle(ch)) : '') + ' · mulai ' + esc(fmtDate(p.created)) + (p.deadline ? ' · <span class="' + (overdue ? 'down bold' : '') + '">deadline ' + esc(fmtDate(p.deadline)) + (overdue ? ' (lewat)' : '') + '</span>' : '') + (p.status !== 'ACTIVE' && p.end ? ' · selesai ' + esc(fmtDate(p.end)) : '') + '</span></div>' +
       '<b class="num">' + (p.type === 'SHORTS' ? p.doneQty + '/' + p.qty : p.progress + '%') + '</b></div>' +
-      '<div style="margin-top:8px">' + progressBar(p.progress) + '</div>' + (actions ? '<div class="row wrap mt-sm" style="gap:6px">' + actions + '</div>' : '') + '</div>';
+      '<div style="margin-top:8px">' + progressBar(p.progress) + '</div>' + (extra || '') + (actions ? '<div class="row wrap mt-sm" style="gap:6px">' + actions + '</div>' : '') + '</div>';
+  }
+  /** Umur proyek dibanding perkiraan (1 long-form = LONGFORM_DAYS hari kerja). */
+  function projPace(p) {
+    if (p.status !== 'ACTIVE' || !p.created) return '';
+    var n = Math.max(1, KPI.workdays(p.created, today(), KPI.normalizeConfig(cfg()))), pace = Number(p.pace) || 1;
+    var expect = Math.min(100, Math.round(n / pace * 100)), late = (Number(p.progress) || 0) + 20 < expect;
+    return '<div class="xs mt-sm ' + (late ? 'down bold' : 'text-2') + '">' + icon('clock').replace('<svg ', '<svg width="12" height="12" style="vertical-align:-2px" ') + ' <span>Hari kerja ke-' + n + ' dari perkiraan ' + fmtN(pace) + ' hari</span>' + (late ? ' · <span>lebih lambat dari perkiraan</span>' : '') + '</div>';
+  }
+  /** Riwayat progres satu proyek (dari PROGRES LOG). */
+  function projHistory(p) {
+    var l = (D().progressLog || []).filter(function (x) { return x.projectId === p.id; }).sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; });
+    if (!l.length) return '';
+    return '<details class="proj-log"><summary class="xs bold">Riwayat progres (' + l.length + ')</summary>' + l.slice(0, 20).map(function (x) {
+      return '<div class="proj-log-row"><span class="xs muted nowrap">' + esc(fmtDate(x.date, { weekday: 'short', day: 'numeric', month: 'short' })) + '</span><span class="num bold nowrap small">' + Math.round(x.from) + '% → ' + Math.round(x.to) + '%</span>' +
+        (x.note ? '<span class="xs text-2 grow" translate="no">' + esc(x.note) + '</span>' : '<span class="grow"></span>') + '</div>';
+    }).join('') + '</details>';
+  }
+  function projExtra(p) {
+    return projPace(p) + (p.notes ? '<div class="xs text-2 mt-sm" translate="no">📝 ' + esc(p.notes) + '</div>' : '') +
+      (p.updated ? '<div class="xs muted mt-sm">Diperbarui ' + esc(relTime(p.updated)) + '</div>' : '') + projHistory(p);
+  }
+  function projActions(p) {
+    if (!canEditProject(p)) return '';
+    return (p.status === 'ACTIVE' ? '<button class="btn sm" data-act="project-progress" data-id="' + esc(p.id) + '">' + icon('trend') + 'Update progres</button>' : '') +
+      '<button class="btn ghost sm" data-act="project-edit" data-id="' + esc(p.id) + '">' + icon('edit') + 'Ubah</button>';
   }
   function canEditProject(p) { return isAdmin() || (S.user && p.employee === S.user.name); }
   function projectsCard() {
@@ -2210,20 +2511,26 @@
     var canAdd = isAdmin() || progChannelsOf(me).length;
     return '<div class="card mb"><div class="card-head"><div class="col"><h2>Proyek video (long-form & shorts)</h2><span class="sub">KPI dihitung dari progres editing: 1 long-form = ' + esc(cfg().LONGFORM_DAYS || 3) + ' hari kerja, 1 paket shorts = ' + esc(cfg().SHORTS_DAYS || 1) + ' hari kerja.</span></div>' +
       (canAdd ? '<button class="btn sm" data-act="project-new">' + icon('plus') + 'Proyek baru dari client</button>' : '') + '</div>' +
-      (act.length ? act.map(function (p) {
-        return projLine(p, canEditProject(p) ? '<button class="btn sm" data-act="project-progress" data-id="' + esc(p.id) + '">' + icon('trend') + 'Update progres</button><button class="btn ghost sm" data-act="project-edit" data-id="' + esc(p.id) + '">' + icon('edit') + 'Ubah</button>' : '');
-      }).join('') : '<div class="empty">Belum ada proyek aktif. Tambahkan saat client mengirim permintaan video.</div>') +
-      (done.length ? '<details class="mt-sm"><summary class="small bold" style="cursor:pointer">Riwayat proyek (' + done.length + ')</summary><div class="mt-sm">' + done.map(function (p) { return projLine(p, ''); }).join('') + '</div></details>' : '') + '</div>';
+      (act.length ? act.map(function (p) { return projLine(p, projActions(p), projExtra(p)); }).join('')
+        : '<div class="empty">Belum ada proyek aktif. Tambahkan saat client mengirim permintaan video.</div>') +
+      (done.length ? '<details class="mt-sm"><summary class="small bold" style="cursor:pointer">Riwayat proyek (' + done.length + ')</summary><div class="mt-sm">' + done.map(function (p) { return projLine(p, isAdmin() ? projActions(p) : '', projHistory(p)); }).join('') + '</div></details>' : '') + '</div>';
   }
-  function projectModal(id) {
-    var p = id ? projectsAll().filter(function (x) { return x.id === id; })[0] : null, isNew = !p;
-    var chs = isAdmin() ? allProgChannels() : progChannelsOf(S.user.name);
-    p = p || { type: 'LONGFORM', title: '', qty: 7, deadline: '', notes: '', channel: chs[0] ? chs[0].key : '', employee: chs[0] ? chs[0].employees[0] : S.user.name, status: 'ACTIVE' };
+  function projectModal(id, chKey) {
+    var p = id ? projectsAll().filter(function (x) { return x.id === id; })[0] : null, isNew = !p, me = S.user.name;
+    if (id && !p) return toast('Proyek tidak ditemukan. Muat ulang data.', 'error');
+    var chs = isAdmin() ? allProgChannels() : progChannelsOf(me);
+    if (isNew && !chs.length) return toast(isAdmin() ? 'Belum ada channel dengan anggota bertugas progres. Atur di Admin → Channel → Ubah → Pembagian tugas.' : 'Kamu tidak punya tugas mode progres (long-form) di channel manapun.', 'error');
+    var ch0 = chs.filter(function (c) { return c.key === chKey; })[0] || chs[0];
+    function progNames(c) { return progMembers(c).map(function (m) { return m.name; }); }
+    function empOpts(c, sel) {
+      return progMembers(c).map(function (m) { return '<option value="' + esc(m.name) + '"' + (m.name === sel ? ' selected' : '') + '>' + esc(cap(m.name)) + (m.label ? ' · ' + esc(m.label) : '') + '</option>'; }).join('');
+    }
+    p = p || { type: 'LONGFORM', title: '', qty: 7, deadline: '', notes: '', channel: ch0 ? ch0.key : '', employee: ch0 && progNames(ch0).indexOf(me) < 0 ? progNames(ch0)[0] : me, status: 'ACTIVE' };
     openModal({
       title: isNew ? 'Proyek baru dari client' : 'Ubah proyek',
       body: '<form id="pj-form">' + (isNew ? '<div class="form-row"><div class="field"><label>Jenis</label><select class="input" name="type" id="pj-type"><option value="LONGFORM">Video long-form (+ thumbnail)</option><option value="SHORTS">Paket shorts dari long-form</option></select></div>' +
-        '<div class="field"><label>Channel</label><select class="input" name="channel">' + chs.map(function (c) { return '<option value="' + esc(c.key) + '"' + (c.key === p.channel ? ' selected' : '') + '>' + esc(chTitle(c)) + '</option>'; }).join('') + '</select></div></div>' +
-        (isAdmin() ? '<div class="field"><label>Dikerjakan oleh</label>' + empSelect('employee', p.employee) + '</div>' : '') : '') +
+        '<div class="field"><label>Channel</label><select class="input" name="channel" id="pj-ch">' + chs.map(function (c) { return '<option value="' + esc(c.key) + '"' + (c.key === p.channel ? ' selected' : '') + '>' + esc(chTitle(c)) + '</option>'; }).join('') + '</select></div></div>' +
+        (isAdmin() ? '<div class="field"><label>Dikerjakan oleh</label><select class="input" name="employee" id="pj-emp">' + empOpts(ch0, p.employee) + '</select><div class="hint">Hanya anggota yang bertugas mode progres di channel ini.</div></div>' : '') : '') +
         '<div class="field"><label>Judul / nama video</label><input class="input" name="title" value="' + esc(p.title) + '" placeholder="Misal: Golf highlight Ep 12" required></div>' +
         '<div class="form-row"><div class="field" id="pj-qty-f"' + (p.type === 'SHORTS' ? '' : ' style="display:none"') + '><label>Jumlah shorts diminta</label><input class="input" type="number" min="1" max="50" name="qty" value="' + esc(p.qty || 7) + '"></div>' +
         '<div class="field"><label>Deadline <span class="muted">(opsional)</span></label><input class="input" type="date" name="deadline" value="' + esc(p.deadline || '') + '"></div></div>' +
@@ -2232,9 +2539,12 @@
       foot: '<button class="btn ghost" data-act="modal-close">Batal</button><button class="btn" id="pj-ok">' + icon('check') + 'Simpan</button>',
       mount: function (m) {
         if ($('#pj-type', m)) $('#pj-type', m).onchange = function () { $('#pj-qty-f', m).style.display = this.value === 'SHORTS' ? '' : 'none'; };
+        if ($('#pj-emp', m)) $('#pj-ch', m).onchange = function () { $('#pj-emp', m).innerHTML = empOpts(channelByKey(this.value), ''); };
         $('#pj-ok', m).onclick = function () {
           var f = formData($('#pj-form', m)), b = this;
           if (String(f.title || '').trim().length < 2) return toast('Tulis judul video.', 'error');
+          if (isNew && isAdmin() && !f.employee) return toast('Pilih siapa yang mengerjakan.', 'error');
+          if (isNew && f.type === 'SHORTS' && !(Number(f.qty) >= 1)) return toast('Isi jumlah shorts yang diminta client.', 'error');
           var body = isNew ? { channel: f.channel, employee: f.employee, type: f.type, title: f.title, qty: f.qty, deadline: f.deadline, notes: f.notes }
             : { id: p.id, title: f.title, qty: f.qty, deadline: f.deadline, notes: f.notes, status: f.status };
           b.disabled = true;
@@ -2286,10 +2596,335 @@
   /** Bagian proyek di dalam form presensi pulang. */
   function checkoutProjectsHtml() {
     var mine = activeProjectsOf(S.user.name);
-    if (!progChannelsOf(S.user.name).length) return '';
-    return '<h3 class="mt mb">Progres proyek video</h3><div class="xs muted mb">Geser sesuai progres editing saat ini. Tambah proyek baru dari client lewat menu <b>Laporan → Proyek video</b>.</div>' +
-      (mine.length ? mine.map(function (p) { return '<div class="task-card"><div class="row between"><span class="bold">' + esc(p.title) + '</span>' + projTypeBadge(p) + '</div><div class="mt-sm">' + progressInput(p, 'co') + '</div></div>'; }).join('')
-        : '<div class="notice small">Belum ada proyek aktif.</div>');
+    if (!progChannelsOf(S.user.name).length && !mine.length) return '';
+    return '<h3 class="mt mb">Progres proyek video</h3><div class="xs muted mb">Geser sesuai progres editing saat ini. Tambah proyek baru dari client lewat menu <b>Laporan → Proyek video</b> atau halaman channel.</div>' +
+      (mine.length ? mine.map(function (p) {
+        var v = S.co && S.co.projects[p.id], q = v == null ? p : Object.assign({}, p, p.type === 'SHORTS' ? { doneQty: v } : { progress: v });
+        var ch = channelByKey(p.channel);
+        return '<div class="task-card"><div class="row between wrap" style="gap:6px"><span class="bold" translate="no">' + esc(p.title) + '</span>' + projTypeBadge(p) + '</div>' + (ch ? '<div class="xs muted">' + esc(chTitle(ch)) + '</div>' : '') + '<div class="mt-sm">' + progressInput(q, 'co') + '</div></div>';
+      }).join('')
+        : '<div class="notice small">Belum ada proyek aktif. Target progres baru berjalan setelah proyek dibuat.</div>');
+  }
+
+  /* =========================================================
+     1.9 — DETAIL KERJA DI LAPORAN (generate & editing)
+     ========================================================= */
+  function unitPct(e) { return e && e.unit === '%' ? '%' : ''; }
+  function unitHtml(e) { return e.unit === '%' ? '%' : e.unit ? ' <span class="xs muted">unit</span>' : ''; }
+  function workDetailBadges(r) {
+    if (!r || !(r.gen > 0 || r.edit > 0)) return '';
+    return '<div class="row wrap" style="gap:4px;margin-top:3px">' +
+      (r.gen > 0 ? '<span class="badge st-none">' + icon('refresh') + 'Generate ' + r.gen + ' · ' + (r.genFor === 'BESOK' ? 'untuk besok' : 'untuk hari ini') + '</span>' : '') +
+      (r.edit > 0 ? '<span class="badge st-warning">' + icon('edit') + 'Editing ' + r.edit + ' · ' + (Number(r.editPct) || 0) + '%</span>' : '') + '</div>';
+  }
+  /** Validasi & rapikan detail kerja dari form laporan. */
+  function repDetail(f) {
+    var gen = f.genOn ? Number(f.gen) : 0, edit = Number(f.edit) || 0, pct = f.editPct;
+    if (f.genOn && (!(gen >= 1 && gen <= 100) || Math.round(gen) !== gen)) return { error: 'Isi jumlah video yang di-generate (1–100), atau pilih "Tidak".' };
+    if (!(edit >= 0 && edit <= 100) || Math.round(edit) !== edit) return { error: 'Jumlah video editing tidak valid (0–100).' };
+    if (edit > 0 && (pct === '' || pct == null || !(Number(pct) >= 0 && Number(pct) <= 100))) return { error: 'Isi progres editing (0–100%).' };
+    return { gen: gen, genFor: gen ? (f.genFor === 'BESOK' ? 'BESOK' : 'HARI_INI') : '', edit: edit, editPct: edit > 0 ? Math.round(Number(pct)) : '' };
+  }
+  function repDetailBox(f) {
+    var on = !!f.genOn, edit = Number(f.edit) || 0;
+    function step(k, v) {
+      return '<div class="stepper" style="width:130px"><button type="button" data-act="rep-step" data-k="' + k + '" data-v="-1" aria-label="Kurangi">−</button><input type="number" min="0" max="100" inputmode="numeric" data-f="' + k + '" value="' + esc(v) + '"><button type="button" data-act="rep-step" data-k="' + k + '" data-v="1" aria-label="Tambah">+</button></div>';
+    }
+    return '<div class="field det-box"><label>Detail kerja hari ini <span class="muted">(bukti kerja · tidak menambah skor)</span></label>' +
+      '<div class="det-row"><span class="det-label">Ada video yang di-generate?</span><div class="seg"><button type="button" class="' + (on ? '' : 'active') + '" data-act="rep-gen" data-v="0">Tidak</button><button type="button" class="' + (on ? 'active' : '') + '" data-act="rep-gen" data-v="1">Ya</button></div></div>' +
+      (on ? '<div class="det-row"><span class="det-label">Jumlah video di-generate</span>' + step('gen', f.gen) + '<div class="seg">' + [['HARI_INI', 'untuk hari ini'], ['BESOK', 'untuk besok']].map(function (x) {
+        return '<button type="button" class="' + (f.genFor === x[0] ? 'active' : '') + '" data-act="rep-genfor" data-v="' + x[0] + '">' + x[1] + '</button>';
+      }).join('') + '</div></div>' : '') +
+      '<div class="det-row"><span class="det-label">Video masih editing (belum selesai)</span>' + step('edit', edit) +
+      (edit > 0 ? '<span class="det-label">progres rata-rata</span><div class="row" style="gap:6px"><input class="input" type="number" min="0" max="100" inputmode="numeric" data-f="editPct" value="' + esc(f.editPct) + '" placeholder="0–100" style="width:90px"><b>%</b></div>' : '') + '</div></div>';
+  }
+  /** Ringkasan detail kerja seseorang pada periode (detail KPI & rapor). */
+  function workDetailOf(name, from, to) {
+    var o = { done: 0, gen: 0, genBesok: 0, edit: 0, days: {} };
+    D().reports.forEach(function (r) {
+      if (r.employee !== name || r.date < from || r.date > to) return;
+      var c = channelByKey(r.channel);
+      if (c && c.employees.indexOf(name) >= 0 && isProgFor(c, name)) return;
+      var d = o.days[r.date] = o.days[r.date] || { done: 0, gen: 0, genBesok: 0, edit: 0, pct: [] };
+      var q = Number(r.qty) || 0, g = Number(r.gen) || 0, ed2 = Number(r.edit) || 0;
+      o.done += q; d.done += q; o.gen += g; d.gen += g;
+      if (r.genFor === 'BESOK') { o.genBesok += g; d.genBesok += g; }
+      o.edit += ed2; d.edit += ed2;
+      if (ed2) d.pct.push(Number(r.editPct) || 0);
+    });
+    return o;
+  }
+  function workDetailHtml(name, from, to) {
+    var w = workDetailOf(name, from, to), days = Object.keys(w.days).sort().reverse();
+    if (!w.gen && !w.edit) return '';
+    return '<h3 class="mt mb">Detail kerja</h3><div class="grid grid-3">' + miniStat('Video selesai', fmtN(w.done), 'dihitung KPI') +
+      miniStat('Video di-generate', fmtN(w.gen), w.genBesok ? w.genBesok + ' untuk besok' : '') + miniStat('Editing tercatat', fmtN(w.edit), 'video belum selesai (jumlah dari semua laporan)') + '</div>' +
+      '<details class="mt-sm"><summary class="small bold" style="cursor:pointer">Rincian per hari (' + days.length + ')</summary><div class="list mt-sm">' + days.map(function (d) {
+        var x = w.days[d], avg = x.pct.length ? Math.round(x.pct.reduce(function (s2, v) { return s2 + v; }, 0) / x.pct.length) : 0;
+        return '<div class="list-item"><span class="small nowrap" style="min-width:110px">' + esc(fmtDate(d, { weekday: 'short', day: 'numeric', month: 'short' })) + '</span><span class="small grow">' +
+          ['selesai ' + fmtN(x.done), x.gen ? 'generate ' + x.gen + (x.genBesok ? ' (' + x.genBesok + ' untuk besok)' : '') : '', x.edit ? 'editing ' + x.edit + ' (' + avg + '%)' : ''].filter(Boolean).join(' · ') + '</span></div>';
+      }).join('') + '</div></details>';
+  }
+  function raporWork(name, from, to) {
+    var w = workDetailOf(name, from, to);
+    if (!w.gen && !w.edit) return '';
+    return '<div class="rp-grid" style="margin-top:8px">' + [['Video selesai', fmtN(w.done)], ['Video di-generate', fmtN(w.gen) + (w.genBesok ? ' (' + w.genBesok + ' untuk besok)' : '')], ['Editing tercatat', fmtN(w.edit)]].map(function (x) {
+      return '<div class="rp-cell"><div class="xs muted">' + x[0] + '</div><div class="bold">' + x[1] + '</div></div>';
+    }).join('') + '</div>';
+  }
+  /** Detail kerja per channel di form presensi pulang. */
+  function outDetailHtml(o, i) {
+    function st(k, v) {
+      return '<div class="stepper" style="width:118px"><button type="button" data-od="' + k + '" data-i="' + i + '" data-d="-1" aria-label="Kurangi">−</button><input type="number" min="0" max="100" inputmode="numeric" data-ov="' + k + '" data-i="' + i + '" value="' + esc(v) + '"><button type="button" data-od="' + k + '" data-i="' + i + '" data-d="1" aria-label="Tambah">+</button></div>';
+    }
+    return '<div class="out-detail"><span class="out-grp"><span class="xs muted">Generate</span>' + st('gen', o.gen) +
+      '<select class="input" data-ogf="' + i + '" style="width:auto">' + [['HARI_INI', 'untuk hari ini'], ['BESOK', 'untuk besok']].map(function (x) { return '<option value="' + x[0] + '"' + (o.genFor === x[0] ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select></span>' +
+      '<span class="out-grp"><span class="xs muted">Masih editing</span>' + st('edit', o.edit) +
+      '<input class="input" type="number" min="0" max="100" inputmode="numeric" data-oep="' + i + '" value="' + esc(o.editPct) + '" placeholder="progres %" style="width:110px"></span></div>';
+  }
+  function bindOutDetail(m) {
+    $$('[data-od]', m).forEach(function (b) {
+      b.onclick = function () {
+        var k = b.dataset.od, i = +b.dataset.i, inp = $('[data-ov="' + k + '"][data-i="' + i + '"]', m);
+        var v = Math.max(0, Math.min(100, (Number(inp.value) || 0) + Number(b.dataset.d)));
+        inp.value = v; S.co.outputs[i][k] = v;
+      };
+    });
+    $$('[data-ov]', m).forEach(function (el) { el.oninput = function () { S.co.outputs[+el.dataset.i][el.dataset.ov] = Math.max(0, Math.min(100, Math.round(Number(el.value) || 0))); }; });
+    $$('[data-ogf]', m).forEach(function (el) { el.onchange = function () { S.co.outputs[+el.dataset.ogf].genFor = el.value; if (S.coSave) S.coSave(); }; });
+    $$('[data-oep]', m).forEach(function (el) { el.oninput = function () { S.co.outputs[+el.dataset.oep].editPct = el.value; }; });
+  }
+
+  /* =========================================================
+     1.9 — TUGAS KHUSUS (di luar channel) & DAFTAR PEKERJAAN KARYAWAN
+     ========================================================= */
+  function tasksAll() { return D().tasks || []; }
+  function tasksOf(name, all) { return tasksAll().filter(function (t) { return t.employee === name && (all || t.status === 'ACTIVE'); }); }
+  function taskById(id) { return tasksAll().filter(function (t) { return t.id === id; })[0] || null; }
+  function taskLogOf(id) { return (D().taskLog || []).filter(function (l) { return l.taskId === id; }).sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; }); }
+  function taskQtyOn(t, d) { return taskLogOf(t.id).filter(function (l) { return l.date === d; }).reduce(function (s2, l) { return s2 + (Number(l.qty) || 0); }, 0); }
+  function canEditTask(t) { return isAdmin() || (!!S.user && t.employee === S.user.name); }
+  function mergeTasks(name, list) { D().tasks = tasksAll().filter(function (t) { return t.employee !== name; }).concat(list || []); }
+  function upsertTask(t) { var l = D().tasks = tasksAll(), i = l.findIndex(function (x) { return x.id === t.id; }); if (i >= 0) l[i] = t; else l.push(t); }
+  /** Progres yang seharusnya sudah dicapai hari ini (tugas progres). */
+  function taskExpected(t) {
+    if (t.mode !== 'PROGRESS' || !t.deadline) return null;
+    var k = KPI.normalizeConfig(cfg()), td = today();
+    if (td < t.start) return 0;
+    var all = Math.max(1, KPI.workdays(t.start, t.deadline, k)), done = KPI.workdays(t.start, td < t.deadline ? td : t.deadline, k);
+    return Math.min(100, Math.round(done / all * 100));
+  }
+  function taskLine(t, actions) {
+    var td = today(), prog = t.mode === 'PROGRESS', overdue = t.status === 'ACTIVE' && t.deadline && t.deadline < td;
+    var exp = t.status === 'ACTIVE' ? taskExpected(t) : null, late = exp != null && (Number(t.progress) || 0) + 10 < exp;
+    var q = prog ? 0 : taskQtyOn(t, td), log = taskLogOf(t.id);
+    var st = t.status === 'DONE' ? '<span class="badge st-good">' + icon('check') + 'Selesai</span>' : t.status === 'CANCELLED' ? '<span class="badge st-none">Dihentikan</span>' : '';
+    return '<div class="task-card"><div class="row between wrap" style="gap:8px"><div class="col" style="min-width:0"><div class="row wrap" style="gap:6px"><span class="bold" translate="no">' + esc(t.title) + '</span>' +
+      '<span class="badge pos-MANAGER">' + icon(prog ? 'trend' : 'report') + (prog ? 'Progres %' : 'Target ' + fmtN(t.target) + ' / hari') + '</span>' + st +
+      (overdue ? '<span class="badge st-critical">' + icon('alert') + 'Lewat deadline</span>' : '') + '</div>' +
+      '<span class="xs muted">' + esc(cap(t.employee)) + ' · mulai ' + esc(fmtDate(t.start)) + (t.deadline ? ' · deadline ' + esc(fmtDate(t.deadline)) : '') + (t.status !== 'ACTIVE' && t.end ? ' · selesai ' + esc(fmtDate(t.end)) : '') + '</span></div>' +
+      '<b class="num">' + (prog ? (Number(t.progress) || 0) + '%' : fmtN(q) + ' / ' + fmtN(t.target)) + '</b></div>' +
+      '<div style="margin-top:8px">' + (prog ? progressBar(Number(t.progress) || 0) : bar(t.target ? q / t.target : null, true)) + '</div>' +
+      (!prog && t.status === 'ACTIVE' ? '<div class="xs text-2 mt-sm">Hari ini: ' + fmtN(q) + ' dari target ' + fmtN(t.target) + '</div>' : '') +
+      (exp != null ? '<div class="xs mt-sm ' + (late ? 'down bold' : 'text-2') + '">' + icon('clock').replace('<svg ', '<svg width="12" height="12" style="vertical-align:-2px" ') + ' <span>Seharusnya sudah ±' + exp + '%</span>' + (late ? ' · <span>lebih lambat dari perkiraan</span>' : '') + '</div>' : '') +
+      (t.notes ? '<div class="xs text-2 mt-sm" translate="no">📝 ' + esc(t.notes) + '</div>' : '') +
+      (log.length ? '<details class="proj-log"><summary class="xs bold">Riwayat (' + log.length + ')</summary>' + log.slice(0, 20).map(function (l) {
+        return '<div class="proj-log-row"><span class="xs muted nowrap">' + esc(fmtDate(l.date, { weekday: 'short', day: 'numeric', month: 'short' })) + '</span><span class="num bold nowrap small">' +
+          (prog ? Math.round(Number(l.from) || 0) + '% → ' + Math.round(Number(l.to) || 0) + '%' : '+' + fmtN(l.qty)) + '</span>' +
+          (l.note ? '<span class="xs text-2 grow" translate="no">' + esc(l.note) + '</span>' : '<span class="grow"></span>') + '</div>';
+      }).join('') + '</details>' : '') +
+      (actions ? '<div class="row wrap mt-sm" style="gap:6px">' + actions + '</div>' : '') + '</div>';
+  }
+  /** Tombol tugas. manage = tampilkan tombol admin (ubah/selesai/hentikan/hapus). back = buka lagi Daftar pekerjaan orang ini sesudahnya. */
+  function taskActions(t, manage, back) {
+    var b = back ? ' data-back="' + esc(back) + '"' : '', id = ' data-id="' + esc(t.id) + '"', out = '';
+    if (t.status === 'ACTIVE' && canEditTask(t)) out += '<button class="btn sm" data-act="task-progress"' + id + b + '>' + icon('trend') + (t.mode === 'PROGRESS' ? 'Update progres' : 'Isi jumlah hari ini') + '</button>';
+    if (manage && isAdmin()) {
+      out += '<button class="btn ghost sm" data-act="task-edit"' + id + b + '>' + icon('edit') + 'Ubah</button>';
+      out += t.status === 'ACTIVE'
+        ? '<button class="btn ghost sm" data-act="task-status" data-v="DONE"' + id + b + '>' + icon('check') + 'Tandai selesai</button><button class="btn ghost sm" data-act="task-status" data-v="CANCELLED"' + id + b + '>' + icon('x') + 'Hentikan</button>'
+        : '<button class="btn ghost sm" data-act="task-status" data-v="ACTIVE"' + id + b + '>' + icon('refresh') + 'Aktifkan lagi</button>';
+      out += '<button class="btn ghost sm" data-act="task-del"' + id + b + '>' + icon('trash') + 'Hapus</button>';
+    }
+    return out;
+  }
+  /** Kartu "Tugas khusus" milik sendiri (Beranda & Laporan). */
+  function myTasksCard() {
+    if (!S.user) return '';
+    var list = tasksOf(S.user.name);
+    if (!list.length) return '';
+    return '<div class="card mt"><div class="card-head"><div class="col"><h2 class="row">' + icon('report') + 'Tugas khusus</h2><span class="sub">Dari manager · ikut dihitung di KPI. Update setiap hari (bisa juga saat presensi pulang).</span></div></div>' +
+      list.map(function (t) { return taskLine(t, taskActions(t, false)); }).join('') + '</div>';
+  }
+  /** Struktur Tim: siapa sedang mengerjakan tugas di luar channel. */
+  function teamTasksCard() {
+    var list = tasksAll().filter(function (t) { return t.status === 'ACTIVE'; }), by = {};
+    if (!list.length) return '';
+    list.forEach(function (t) { (by[t.employee] = by[t.employee] || []).push(t); });
+    return '<div class="card mt"><div class="card-head"><h2 class="row">' + icon('report') + 'Tugas khusus (di luar channel)</h2><span class="sub">' + list.length + ' tugas aktif</span></div><div class="list">' +
+      Object.keys(by).sort().map(function (n) {
+        return '<div class="list-item" style="align-items:flex-start">' + personAvatar(n, 'sm') + '<div class="col grow" style="min-width:0"><span class="bold">' + esc(cap(n)) + '</span>' +
+          by[n].map(function (t) { return '<div class="xs text-2"><span translate="no">' + esc(t.title) + '</span> · ' + (t.mode === 'PROGRESS' ? (Number(t.progress) || 0) + '%' + (t.deadline ? ' · deadline ' + esc(fmtDate(t.deadline)) : '') : 'target ' + fmtN(t.target) + ' / hari') + '</div>'; }).join('') + '</div>' +
+          (isAdmin() || isViewer() ? '<button class="btn ghost sm" data-act="emp-jobs" data-name="' + esc(n) + '">' + icon('report') + 'Pekerjaan</button>' : '') + '</div>';
+      }).join('') + '</div></div>';
+  }
+  /** Bagian tugas khusus di form presensi pulang. */
+  function checkoutTasksHtml() {
+    var td = today(), mine = tasksOf(S.user.name).filter(function (t) { return t.start <= td; });
+    if (!mine.length) return '';
+    return '<h3 class="mt mb">Tugas khusus</h3><div class="xs muted mb">Update progres / jumlah tugas khusus hari ini (ikut dihitung di KPI).</div>' + mine.map(function (t) {
+      var v = S.co && S.co.taskUpd[t.id], already = taskQtyOn(t, td);
+      var inp = t.mode === 'PROGRESS'
+        ? '<div class="row" style="gap:10px"><input type="range" class="grow" min="0" max="100" step="5" value="' + (v == null ? (Number(t.progress) || 0) : v) + '" data-ctv="' + esc(t.id) + '" aria-label="Progres tugas"><b class="num" style="width:48px;text-align:right">' + (v == null ? (Number(t.progress) || 0) : v) + '%</b></div>'
+        : '<div class="row wrap" style="gap:10px"><div class="stepper" style="width:150px"><button type="button" data-ctq="' + esc(t.id) + '" data-d="-1" aria-label="Kurangi">−</button><input type="number" min="0" max="1000" inputmode="numeric" data-ctv="' + esc(t.id) + '" value="' + (v == null ? 0 : v) + '"><button type="button" data-ctq="' + esc(t.id) + '" data-d="1" aria-label="Tambah">+</button></div>' +
+          '<span class="small text-2">selesai hari ini · target ' + fmtN(t.target) + (already ? ' · sudah dicatat ' + fmtN(already) : '') + '</span></div>';
+      return '<div class="task-card"><div class="row between wrap" style="gap:6px"><span class="bold" translate="no">' + esc(t.title) + '</span>' + (t.deadline ? '<span class="xs muted">deadline ' + esc(fmtDate(t.deadline)) + '</span>' : '') + '</div><div class="mt-sm">' + inp + '</div></div>';
+    }).join('');
+  }
+  function backendOk(min, msg) {
+    var bv = D().backendVersion;
+    if (!API.isDemo() && bv && bv !== 'demo' && cmpVer(bv, min) < 0) { toast(msg || ('Server (Apps Script) masih versi ' + bv + '. Deploy backend 1.9.0 dulu, baru fitur ini bisa dipakai.'), 'error'); return false; }
+    return true;
+  }
+  /** Pembagian tugas channel dalam bentuk eksplisit (target hasil bagi rata ikut ditulis). */
+  function explicitMembers(c) {
+    return membersOf(c).map(function (m) { return { name: m.name, label: m.label || '', mode: m.mode, target: m.mode === 'COUNT' ? Math.round((m.target || 0) * 100) / 100 : '', notes: m.notes || '' }; });
+  }
+  function saveMembers(c, members) { return API.call('updateChannel', { channel: { row: c.row, key: c.key, fields: { members: members } } }); }
+  /** Admin → Karyawan → Pekerjaan: semua pekerjaan satu orang (channel + tugas khusus). */
+  function jobsModal(name) {
+    var admin = isAdmin();
+    var chs = D().channels.filter(function (c) { return c.employees.indexOf(name) >= 0; });
+    var chRows = chs.map(function (c) {
+      var m = memberOf(c, name) || { mode: 'COUNT', label: '', target: 0 };
+      return '<div class="list-item">' + avatar(c, 'sm') + '<div class="col grow" style="min-width:0"><span class="bold ellipsis">' + esc(chTitle(c)) + '</span><span class="xs muted">' + (m.label ? esc(m.label) + ' · ' : '') +
+        (m.mode === 'PROGRESS' ? 'progres proyek' : 'target ' + fmtN(m.target) + ' / ' + periodWord()) + '</span></div>' +
+        (admin ? '<div class="row" style="gap:4px"><button class="btn ghost sm" data-act="job-member" data-ch="' + esc(c.key) + '" data-name="' + esc(name) + '">' + icon('edit') + 'Ubah</button><button class="btn ghost sm" data-act="job-release" data-ch="' + esc(c.key) + '" data-name="' + esc(name) + '">' + icon('x') + 'Lepas</button></div>' : '') + '</div>';
+    }).join('');
+    var act = tasksOf(name), ended = tasksOf(name, true).filter(function (t) { return t.status !== 'ACTIVE'; }).sort(function (a, b) { return (b.end || '').localeCompare(a.end || ''); }).slice(0, 10);
+    openModal({
+      title: 'Daftar pekerjaan · ' + esc(cap(name)), wide: true,
+      body: '<div class="small text-2 mb">Semua pekerjaan ' + esc(cap(name)) + ' yang dihitung di KPI. ' + (admin ? 'Tambah atau kurangi kapan saja — langsung tersimpan ke spreadsheet.' : 'Mode lihat saja.') + '</div>' +
+        '<div class="card-head"><h3 class="row">' + icon('yt') + 'Di channel (' + chs.length + ')</h3>' + (admin ? '<button class="btn ghost sm" data-act="job-member" data-ch="" data-name="' + esc(name) + '">' + icon('plus') + 'Tambah ke channel</button>' : '') + '</div>' +
+        '<div class="list">' + (chRows || '<div class="empty">Tidak memegang channel.</div>') + '</div>' +
+        '<div class="card-head mt"><h3 class="row">' + icon('report') + 'Tugas khusus (' + act.length + ')</h3>' + (admin ? '<button class="btn sm" data-act="task-new" data-name="' + esc(name) + '">' + icon('plus') + 'Tambah tugas</button>' : '') + '</div>' +
+        (act.length ? act.map(function (t) { return taskLine(t, taskActions(t, true, name)); }).join('') : '<div class="empty">Belum ada tugas khusus. Contoh: riset, membantu proyek lain, persiapan channel baru.</div>') +
+        (ended.length ? '<details class="mt-sm"><summary class="small bold" style="cursor:pointer">Tugas yang sudah berakhir (' + ended.length + ')</summary><div class="mt-sm">' + ended.map(function (t) { return taskLine(t, admin ? taskActions(t, true, name) : ''); }).join('') + '</div></details>' : ''),
+      foot: '<button class="btn" data-act="modal-close">Selesai</button>'
+    });
+  }
+  /** Tambah orang ke channel / ubah tugasnya di satu channel (anggota lain tidak berubah). */
+  function memberEditModal(key, name) {
+    var c = key ? channelByKey(key) : null;
+    if (key && !c) return toast('Channel ini sudah berubah / terhapus. Muat ulang data lalu coba lagi.', 'error');
+    var opts = D().channels.filter(function (x) { return x.employees.indexOf(name) < 0; });
+    if (!c && !opts.length) return toast('Orang ini sudah memegang semua channel.', 'error');
+    var cur = (c && memberOf(c, name)) || { label: '', mode: 'COUNT', target: '' };
+    var tv = cur.mode === 'COUNT' && cur.target != null && cur.target !== '' ? Math.round(cur.target * 100) / 100 : '';
+    openModal({
+      title: (c ? esc(chTitle(c)) : 'Tambah ke channel') + ' · ' + esc(cap(name)),
+      body: (c ? '' : '<div class="field"><label>Channel</label><select class="input" id="jm-ch">' + opts.map(function (x) { return '<option value="' + esc(x.key) + '">' + esc(chTitle(x)) + (x.employees.length ? ' — ' + esc(x.employees.map(cap).join(', ')) : '') + '</option>'; }).join('') + '</select></div>') +
+        '<div class="field"><label>Jenis video / pekerjaan</label><input class="input" id="jm-label" list="label-list3" value="' + esc(cur.label || '') + '" placeholder="Misal: Shorts" maxlength="60"><datalist id="label-list3">' + JOB_LABELS.map(function (x) { return '<option value="' + esc(x) + '">'; }).join('') + '</datalist></div>' +
+        '<div class="form-row"><div class="field"><label>Cara hitung KPI</label><select class="input" id="jm-mode"><option value="COUNT"' + (cur.mode === 'PROGRESS' ? '' : ' selected') + '>Jumlah video (pakai target)</option><option value="PROGRESS"' + (cur.mode === 'PROGRESS' ? ' selected' : '') + '>Progres proyek (long-form)</option></select></div>' +
+        '<div class="field" id="jm-t-f"' + (cur.mode === 'PROGRESS' ? ' style="display:none"' : '') + '><label>Target per ' + periodWord() + '</label><input class="input" id="jm-target" type="number" min="0" max="1000" step="0.5" inputmode="decimal" value="' + esc(tv) + '"></div></div>' +
+        '<div class="hint">Anggota lain di channel ini tidak berubah. TARGET channel dihitung ulang otomatis.</div>',
+      foot: '<button class="btn ghost" data-act="modal-close">Batal</button><button class="btn" id="jm-ok">' + icon('check') + 'Simpan</button>',
+      mount: function (m) {
+        $('#jm-mode', m).onchange = function () { $('#jm-t-f', m).style.display = this.value === 'PROGRESS' ? 'none' : ''; };
+        $('#jm-ok', m).onclick = function () {
+          var b = this; if (b.disabled) return;
+          var c2 = c || channelByKey($('#jm-ch', m).value);
+          if (!c2) return toast('Pilih channel.', 'error');
+          var mode = $('#jm-mode', m).value === 'PROGRESS' ? 'PROGRESS' : 'COUNT', label = $('#jm-label', m).value.trim();
+          var raw = String($('#jm-target', m).value || '').replace(',', '.').trim(), t = Number(raw);
+          if (mode === 'COUNT' && raw === '') return toast('Isi target per ' + periodWord() + ' untuk ' + cap(name) + '.', 'error');
+          if (mode === 'COUNT' && (!isFinite(t) || t < 0 || t > 1000)) return toast('Target ' + cap(name) + ' tidak valid (0–1000).', 'error');
+          if (!backendOk('1.8.0', 'Server (Apps Script) masih versi ' + D().backendVersion + '. Deploy backend 1.8.0 dulu, baru pembagian tugas bisa disimpan.')) return;
+          var all = explicitMembers(c2), at = all.findIndex(function (x) { return x.name === name; });
+          var mine = { name: name, label: label, mode: mode, target: mode === 'COUNT' ? t : '', notes: at >= 0 ? all[at].notes : '' };
+          if (at >= 0) all[at] = mine; else all.push(mine);
+          b.disabled = true;
+          saveMembers(c2, all).then(function () { closeModal(); toast('Pekerjaan ' + cap(name) + ' tersimpan ✓'); return loadData(); })
+            .then(function () { jobsModal(name); }).catch(function (e) { b.disabled = false; handleErr(e); });
+        };
+      }
+    });
+  }
+  /** Tambah / ubah tugas khusus. */
+  function taskModal(id, name) {
+    var t = id ? taskById(id) : null, isNew = !t;
+    if (id && !t) return toast('Tugas tidak ditemukan. Muat ulang data.', 'error');
+    t = t || { employee: name, title: '', mode: 'PROGRESS', target: '', start: today(), deadline: '', notes: '' };
+    var who = t.employee;
+    function explain(mode) {
+      return mode === 'COUNT' ? 'KPI: jumlah yang dilaporkan setiap hari dibanding target per hari, seperti output channel.'
+        : 'KPI: 100% dibagi rata ke hari kerja sampai deadline (contoh: 5 hari kerja → 20% per hari). Karyawan meng-update progresnya setiap hari.';
+    }
+    openModal({
+      title: (isNew ? 'Tambah tugas khusus' : 'Ubah tugas') + ' · ' + esc(cap(who)),
+      body: '<form id="tk-form"><div class="field"><label>Nama tugas</label><input class="input" name="title" value="' + esc(t.title) + '" maxlength="200" placeholder="Misal: Riset cara monetisasi channel YouTube yang cepat"></div>' +
+        '<div class="field"><label>Cara mengukur</label><select class="input" name="mode" id="tk-mode"><option value="PROGRESS"' + (t.mode === 'COUNT' ? '' : ' selected') + '>Progres % sampai deadline (riset, persiapan, proyek)</option><option value="COUNT"' + (t.mode === 'COUNT' ? ' selected' : '') + '>Jumlah per hari (ada target hitungan)</option></select></div>' +
+        '<div class="field" id="tk-target-f"' + (t.mode === 'COUNT' ? '' : ' style="display:none"') + '><label>Target per hari</label><input class="input" type="number" min="0.5" max="1000" step="0.5" inputmode="decimal" name="target" value="' + esc(t.mode === 'COUNT' ? t.target : '') + '"></div>' +
+        '<div class="form-row"><div class="field"><label>Mulai</label><input class="input" type="date" name="start" value="' + esc(t.start || today()) + '"></div>' +
+        '<div class="field"><label>Deadline <span class="muted" id="tk-dl-hint">' + (t.mode === 'COUNT' ? '(opsional)' : '(wajib)') + '</span></label><input class="input" type="date" name="deadline" value="' + esc(t.deadline || '') + '"></div></div>' +
+        '<div class="field"><label>Catatan / arahan <span class="muted">(opsional)</span></label><textarea class="input" name="notes" rows="2" maxlength="500">' + esc(t.notes || '') + '</textarea></div>' +
+        '<div class="notice small" id="tk-explain">' + explain(t.mode) + '</div></form>',
+      foot: '<button class="btn ghost" data-act="modal-close">Batal</button><button class="btn" id="tk-ok">' + icon('check') + 'Simpan</button>',
+      mount: function (m) {
+        $('#tk-mode', m).onchange = function () {
+          var c = this.value === 'COUNT';
+          $('#tk-target-f', m).style.display = c ? '' : 'none';
+          $('#tk-dl-hint', m).textContent = c ? '(opsional)' : '(wajib)';
+          $('#tk-explain', m).textContent = explain(this.value);
+        };
+        $('#tk-ok', m).onclick = function () {
+          var b = this; if (b.disabled) return;
+          var f = formData($('#tk-form', m)), title = String(f.title || '').trim(), mode = f.mode === 'COUNT' ? 'COUNT' : 'PROGRESS';
+          if (title.length < 3) return toast('Tulis nama tugas (minimal 3 huruf).', 'error');
+          if (!f.start) return toast('Isi tanggal mulai.', 'error');
+          if (mode === 'PROGRESS' && !f.deadline) return toast('Isi deadline tugas.', 'error');
+          if (f.deadline && f.deadline < f.start) return toast('Deadline tidak boleh sebelum tanggal mulai.', 'error');
+          var tg = Number(String(f.target || '').replace(',', '.'));
+          if (mode === 'COUNT' && !(tg > 0 && tg <= 1000)) return toast('Isi target jumlah per hari (lebih dari 0).', 'error');
+          if (!backendOk('1.9.0')) return;
+          var body = { title: title, mode: mode, target: mode === 'COUNT' ? tg : '', start: f.start, deadline: f.deadline || '', notes: f.notes || '' };
+          if (isNew) body.employee = who; else body.id = t.id;
+          b.disabled = true;
+          API.call('saveTask', { task: body }).then(function (r) {
+            upsertTask(r.task); closeModal(); toast(isNew ? 'Tugas ditambahkan ✓' : 'Tugas disimpan ✓'); render(); jobsModal(who); loadData(true);
+          }).catch(function (e) { b.disabled = false; handleErr(e); });
+        };
+      }
+    });
+  }
+  /** Update progres (tugas progres) atau isi jumlah hari ini (tugas jumlah). */
+  function taskProgressModal(id, back) {
+    var t = taskById(id);
+    if (!t) return toast('Tugas tidak ditemukan. Muat ulang data.', 'error');
+    var prog = t.mode === 'PROGRESS', val = prog ? (Number(t.progress) || 0) : 1;
+    openModal({
+      title: (prog ? 'Update progres' : 'Jumlah hari ini') + ' · <span translate="no">' + esc(t.title) + '</span>',
+      body: '<div class="small text-2 mb">' + (prog ? 'Sampai sekarang tugas ini sudah selesai berapa persen?' : 'Berapa yang selesai (selain yang sudah dicatat)? Target ' + fmtN(t.target) + ' per hari · sudah dicatat hari ini: ' + fmtN(taskQtyOn(t, today()))) + '</div>' +
+        (prog ? '<div class="row" style="gap:10px"><input type="range" class="grow" min="0" max="100" step="5" value="' + val + '" data-tmv="x" aria-label="Progres tugas"><b class="num" style="width:48px;text-align:right">' + val + '%</b></div>'
+          : '<div class="stepper" style="width:150px"><button type="button" data-tmq="x" data-d="-1" aria-label="Kurangi">−</button><input type="number" min="0" max="1000" inputmode="numeric" data-tmv="x" value="1"><button type="button" data-tmq="x" data-d="1" aria-label="Tambah">+</button></div>') +
+        '<div class="field mt"><label>Catatan <span class="muted">(opsional)</span></label><input class="input" id="tm-note" maxlength="300" placeholder="Misal: sudah merangkum 5 sumber"></div>',
+      foot: '<button class="btn ghost" data-act="modal-close">Batal</button><button class="btn" id="tm-ok">' + icon('check') + 'Simpan</button>',
+      mount: function (m) {
+        bindProgressInputs(m, 'tm', function (k, v) { val = v; });
+        $('#tm-ok', m).onclick = function () {
+          var b = this; if (b.disabled) return;
+          var u = { id: t.id, note: $('#tm-note', m).value };
+          if (prog) { if (val === (Number(t.progress) || 0)) return toast('Progres belum berubah.', 'error'); u.progress = val; }
+          else { if (!(val > 0)) return toast('Isi jumlah lebih dari 0.', 'error'); u.qty = val; }
+          if (!backendOk('1.9.0')) return;
+          b.disabled = true;
+          API.call('updateTask', { name: isAdmin() ? t.employee : undefined, updates: [u] }).then(function (r) {
+            mergeTasks(t.employee, r.tasks); closeModal(); toast('Tersimpan ✓'); render();
+            return loadData(true).then(function () { if (back) jobsModal(back); });
+          }).catch(function (e) { b.disabled = false; handleErr(e); });
+        };
+      }
+    });
   }
 
   /* ---------- Pertanyaan "ada masalah?" ---------- */
@@ -2461,15 +3096,19 @@
     },
     'hide-install': function () { Store.set('hideInstall', '1'); render(); },
     qty: function (el) {
-      var f = S.form; f.qty = Math.max(0, (Number(f.qty) || 0) + Number(el.dataset.v));
+      var f = S.form; if (!f) return;
+      f.qty = Math.max(0, (Number(f.qty) || 0) + Number(el.dataset.v));
       var inp = $('[data-f="qty"]'); if (inp) inp.value = f.qty;
-      S.dirty = true;
+      S.dirty = true; saveRepDraft();
     },
+    'hard-reload': function () { Store.set('cache_data', null); Store.set('cache_yt', null); location.reload(); },
+    'discard-rep-draft': function () { draftClear('rep'); S.form = null; S.dirty = false; S.form = defaultForm(); render(); toast('Draf dibuang.'); },
     'edit-report': function (el) {
       var r = D().reports.filter(function (x) { return x.id === el.dataset.id; })[0];
       if (!r) return;
       S.editId = r.id;
-      S.form = { employee: r.employee, channel: r.channel, date: r.date, task: r.task, qty: r.qty, links: r.links, notes: r.notes };
+      S.form = { employee: r.employee, channel: r.channel, date: r.date, task: r.task, qty: r.qty, links: r.links, notes: r.notes,
+        genOn: (Number(r.gen) || 0) > 0, gen: Number(r.gen) || 1, genFor: r.genFor || 'HARI_INI', edit: Number(r.edit) || 0, editPct: r.editPct == null ? '' : r.editPct };
       S.dirty = true;
       if (route().name !== 'report') go('report'); else render();
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -2713,14 +3352,28 @@
       });
     },
     'save-channel2': function (el) {
-      var f = formData($('#ch-form'));
-      var people = $$('#ch-people input:checked').map(function (i) { return i.value; });
+      var f = formData($('#ch-form')), st = S.chTeam;
       if (!String(f.name || '').trim()) return toast('Nama channel wajib diisi.', 'error');
       var key = el.dataset.key, c = key ? channelByKey(key) : null;
-      var fields = { name: f.name.trim(), type: f.type, link: String(f.link || '').trim(), indicator: f.indicator, target: f.target, notes: f.notes, employees: people.join(', '), minDuration: f.minDuration, kpiMode: f.kpiMode };
+      if (key && !c) return toast('Channel ini sudah berubah / terhapus. Muat ulang data lalu coba lagi.', 'error');
+      if (!c && D().channels.some(function (x) { return x.key.toUpperCase() === f.name.replace(/\s+/g, ' ').trim().toUpperCase(); })) return toast('Channel dengan nama ini sudah ada.', 'error');
+      var bv = D().backendVersion;
+      if (!API.isDemo() && bv && bv !== 'demo' && cmpVer(bv, '1.8.0') < 0) return toast('Server (Apps Script) masih versi ' + bv + '. Deploy backend 1.8.0 dulu, baru pembagian tugas bisa disimpan.', 'error');
+      var members = [], bad = null;
+      (st ? st.order : []).forEach(function (n) {
+        var x = st.map[n], label = String(x.label || '').trim();
+        if (x.mode === 'PROGRESS') { members.push({ name: n, label: label, mode: 'PROGRESS', target: '' }); return; }
+        var raw = String(x.target == null ? '' : x.target).replace(',', '.').trim(), t = Number(raw);
+        if (!bad && raw === '') bad = 'Isi target per ' + periodWord() + ' untuk ' + cap(n) + '.';
+        else if (!bad && (!isFinite(t) || t < 0 || t > 1000)) bad = 'Target ' + cap(n) + ' tidak valid (0–1000).';
+        members.push({ name: n, label: label, mode: 'COUNT', target: t });
+      });
+      if (bad) return toast(bad, 'error');
+      var fields = { name: f.name.trim(), type: f.type, link: String(f.link || '').trim(), indicator: f.indicator, notes: f.notes, minDuration: f.minDuration, members: members };
       if (f.targetViews !== undefined) { fields.targetViews = parseMoney(f.targetViews) || ''; fields.targetSubs = parseMoney(f.targetSubs) || ''; }
       if (fields.link && !/^https?:\/\/(www\.|m\.)?youtu/i.test(fields.link)) return toast('Link harus link channel YouTube (https://youtube.com/...).', 'error');
       var linkChanged = fields.link && (!c || c.link !== fields.link);
+      if (el.disabled) return;
       el.disabled = true;
       (c ? API.call('updateChannel', { channel: { row: c.row, key: c.key, fields: fields } }) : API.call('addChannel', { channel: fields })).then(function () {
         closeModal(); toast('Channel tersimpan ✓');
@@ -2745,7 +3398,7 @@
       });
     },
     'reload-audit': function () { S.audit = null; render(); },
-    'project-new': function () { projectModal(); },
+    'project-new': function (el) { projectModal(null, el && el.dataset.ch); },
     'project-edit': function (el) { projectModal(el.dataset.id); },
     'project-progress': function (el) { progressModal(el.dataset.id); },
     'close-alert': function (el) {
@@ -2830,7 +3483,8 @@
       var ev = geoEval(S.ci.geo);
       if (S.ci.geoState === 'err' && ev.state !== 'dinas') {
         cls = g.mode === 'STRICT' ? 'warn' : '';
-        html = (S.ci.geoErr === 1 ? '<b>Akses lokasi ditolak.</b> <span>Izinkan lokasi: klik ikon 🔒 di sebelah alamat web → Lokasi → Izinkan, lalu tekan "Ambil ulang lokasi".</span>'
+        html = (S.ci.geoErr === 1 ? '<b>Akses lokasi ditolak.</b> <span>Izinkan lokasi: klik ikon 🔒 di sebelah alamat web → Lokasi → Izinkan, lalu tekan "Ambil ulang lokasi".</span>' +
+            (isDesktop() ? '' : '<div class="xs">Di HP: nyalakan Lokasi/GPS, lalu Pengaturan → Aplikasi → Chrome (atau Safari) → Izin → Lokasi → Izinkan.</div>')
           : '<b>Lokasi tidak bisa didapat.</b> <span>Nyalakan GPS / Wi-Fi. Di PC Windows: Settings → Privacy & security → Location → On.</span>') +
           (g.mode === 'STRICT' ? ' <span>Presensi masuk membutuhkan lokasi.</span>' : '') + '<div class="mt-sm">' + retry + '</div>';
       } else if (ev.state === 'dinas') { cls = 'ok'; html = '📍 <b>Dinas luar / WFH disetujui</b> <span>— lokasi tidak dibatasi hari ini.</span>'; }
@@ -2950,15 +3604,15 @@
     var g = e ? e.grade : KPI.grade(null);
     function row(label, value, sub) { return '<tr><td>' + label + '</td><td class="num"><b>' + value + '</b></td><td class="muted">' + (sub || '') + '</td></tr>'; }
     var comp = e ? '<table class="rp-table"><thead><tr><th>Komponen</th><th class="num">Nilai</th><th>Keterangan</th></tr></thead><tbody>' +
-      row('Capaian output', fmtPct(e.achievement), fmtN(e.actual) + ' / ' + fmtN(e.target) + (e.unit ? ' unit' : '') + ' · bobot ' + c.weightOutput + '%') +
+      row('Capaian output', fmtPct(e.achievement), fmtN(e.actual) + ' / ' + fmtN(e.target) + (e.unit === '%' ? '%' : e.unit ? ' unit' : '') + ' · bobot ' + c.weightOutput + '%') +
       row('Disiplin laporan', fmtPct(e.discipline), e.reportedDays + ' / ' + e.workdays + ' hari · bobot ' + c.weightDiscipline + '%') +
       (e.attendance != null ? row('Kehadiran', fmtPct(e.attendance), 'bobot ' + c.weightAttendance + '%') : '') +
       (e.outcome != null ? row('Hasil channel', fmtPct(e.outcome), 'bobot ' + c.weightOutcome + '%') : '') + '</tbody></table>'
       : '<p class="muted small">' + (leader ? 'Manager & bos tidak masuk peringkat KPI.' : 'Belum ada target KPI pada bulan ini.') + '</p>';
     var chRows = e && e.channels.length ? '<table class="rp-table"><thead><tr><th>Channel</th><th class="num">Target</th><th class="num">Aktual</th><th class="num">Capaian</th><th class="num">Hasil channel</th></tr></thead><tbody>' +
       e.channels.map(function (x) {
-        var ch = channelByKey(x.key), o = x.outcome;
-        return '<tr><td>' + esc(ch ? chTitle(ch) : x.name) + '</td><td class="num">' + fmtN(x.target) + '</td><td class="num">' + fmtN(x.actual) + '</td><td class="num">' + fmtPct(x.achievement) + '</td>' +
+        var ch = channelByKey(x.key), o = x.outcome, u = x.mode === 'PROGRESS' ? ' unit' : x.mode === 'TASK' ? '%' : '';
+        return '<tr><td>' + esc(ch ? chTitle(ch) : x.name) + (x.label || x.mode === 'PROGRESS' ? '<div class="xs muted">' + esc(x.label || '') + (x.label && x.mode === 'PROGRESS' ? ' · ' : '') + (x.mode === 'PROGRESS' ? 'progres proyek' : '') + '</div>' : '') + '</td><td class="num">' + fmtN(x.target) + u + '</td><td class="num">' + fmtN(x.actual) + u + '</td><td class="num">' + fmtPct(x.achievement) + '</td>' +
           '<td class="num">' + (o ? fmtPct(o.achievement) + (o.views != null ? '<div class="xs muted">' + signed(o.views, true) + ' views</div>' : '') : '—') + '</td></tr>';
       }).join('') + '</tbody></table>' : '';
     var attHtml = a ? '<div class="rp-grid">' +
@@ -2986,6 +3640,7 @@
       '<div class="grow"></div><div class="xs muted right">' + esc(fmtDate(from, { day: 'numeric', month: 'long' })) + ' – ' + esc(fmtDate(to, { day: 'numeric', month: 'long', year: 'numeric' })) + '<br>Dicetak ' + esc(fmtDate(today(), { day: 'numeric', month: 'long', year: 'numeric' })) + '</div></div>' +
       (trial ? '<div class="rp-note">Data sebelum ' + esc(fmtDate(c.goLive, { day: 'numeric', month: 'long', year: 'numeric' })) + ' adalah masa uji coba dan tidak dihitung.</div>' : '') +
       '<h3>1. KPI</h3>' + comp + chRows +
+      raporWork(name, from, to) +
       '<h3>2. Kehadiran & denda</h3>' + attHtml +
       (projHtml ? '<h3>3. Proyek video</h3>' + projHtml : '') +
       (alertHtml ? '<h3>' + (projHtml ? '4' : '3') + '. Pantauan kerja</h3>' + alertHtml : '') +
@@ -3093,6 +3748,60 @@
     }
   });
 
+  /* ---------- aksi 1.9 ---------- */
+  Object.assign(ACT, {
+    'rep-gen': function (el) { var f = S.form; if (!f) return; f.genOn = el.dataset.v === '1'; if (f.genOn && !(Number(f.gen) >= 1)) f.gen = 1; S.dirty = true; saveRepDraft(); render(); },
+    'rep-genfor': function (el) { var f = S.form; if (!f) return; f.genFor = el.dataset.v === 'BESOK' ? 'BESOK' : 'HARI_INI'; S.dirty = true; saveRepDraft(); render(); },
+    'rep-step': function (el) {
+      var f = S.form, k = el.dataset.k; if (!f || (k !== 'gen' && k !== 'edit')) return;
+      var before = Number(f[k]) || 0;
+      f[k] = Math.max(k === 'gen' ? 1 : 0, Math.min(100, before + Number(el.dataset.v)));
+      S.dirty = true; saveRepDraft();
+      if (k === 'edit' && (before > 0) !== (f[k] > 0)) render();
+      else { var inp = $('[data-f="' + k + '"]'); if (inp) inp.value = f[k]; }
+    },
+    'emp-jobs': function (el) { jobsModal(el.dataset.name); },
+    'job-member': function (el) { memberEditModal(el.dataset.ch, el.dataset.name); },
+    'job-release': function (el) {
+      var c = channelByKey(el.dataset.ch), name = el.dataset.name; if (!c) return;
+      confirmBox('Lepas ' + cap(name) + ' dari ' + chTitle(c) + '?', esc('Target channel ini untuk ' + cap(name) + ' dihapus dari KPI. Laporan lama tetap tersimpan.' + (c.employees.length === 1 ? ' Channel ini menjadi tanpa pemegang (tetap dipantau).' : '')), 'Lepas', true).then(function (ok) {
+        if (!ok) { jobsModal(name); return; }
+        if (!backendOk('1.8.0', 'Server (Apps Script) masih versi ' + D().backendVersion + '. Deploy backend 1.8.0 dulu, baru pembagian tugas bisa disimpan.')) return;
+        saveMembers(c, explicitMembers(c).filter(function (x) { return x.name !== name; }))
+          .then(function () { toast(cap(name) + ' dilepas dari ' + chTitle(c) + ' ✓'); return loadData(); })
+          .then(function () { jobsModal(name); }).catch(handleErr);
+      });
+    },
+    'task-new': function (el) { taskModal(null, el.dataset.name); },
+    'task-edit': function (el) { taskModal(el.dataset.id); },
+    'task-progress': function (el) { taskProgressModal(el.dataset.id, el.dataset.back); },
+    'task-status': function (el) {
+      var t = taskById(el.dataset.id), st = el.dataset.v, back = el.dataset.back; if (!t) return;
+      var txt = st === 'DONE' ? ['Tandai selesai?', 'Progres dicatat 100% hari ini dan tugas tidak memberi target lagi.', 'Tandai selesai']
+        : st === 'CANCELLED' ? ['Hentikan tugas ini?', 'Mulai besok tugas ini tidak memberi target lagi. Riwayatnya tetap tersimpan.', 'Hentikan']
+          : ['Aktifkan lagi?', 'Tugas kembali berjalan dan memberi target lagi mulai hari ini.', 'Aktifkan'];
+      confirmBox(txt[0], esc(txt[1]), txt[2], st === 'CANCELLED').then(function (ok) {
+        if (!ok) { if (back) jobsModal(back); return; }
+        if (!backendOk('1.9.0')) return;
+        API.call('saveTask', { task: { id: t.id, status: st } }).then(function (r) {
+          upsertTask(r.task); toast(st === 'DONE' ? 'Tugas selesai ✓' : st === 'CANCELLED' ? 'Tugas dihentikan.' : 'Tugas aktif lagi ✓'); render();
+          return loadData(true).then(function () { if (back) jobsModal(back); });
+        }).catch(handleErr);
+      });
+    },
+    'task-del': function (el) {
+      var t = taskById(el.dataset.id), back = el.dataset.back; if (!t) return;
+      confirmBox('Hapus tugas ini?', '<span translate="no">' + esc(t.title) + '</span><br>' + esc('Untuk tugas yang salah dibuat: riwayat progresnya ikut terhapus dan KPI dihitung ulang. Untuk mengakhiri tugas, pakai "Tandai selesai" atau "Hentikan".'), 'Hapus', true).then(function (ok) {
+        if (!ok) { if (back) jobsModal(back); return; }
+        if (!backendOk('1.9.0')) return;
+        API.call('deleteTask', { id: t.id }).then(function () {
+          D().tasks = tasksAll().filter(function (x) { return x.id !== t.id; }); toast('Tugas dihapus.'); render();
+          return loadData(true).then(function () { if (back) jobsModal(back); });
+        }).catch(handleErr);
+      });
+    }
+  });
+
   var CHANGE = {
     'rep-who': function (el) { S.rep.who = el.value; render(); },
     'kpi-from': function (el) { S.kpi.from = el.value; if (!S.kpi.to) S.kpi.to = today(); render(); },
@@ -3115,16 +3824,16 @@
     });
     document.addEventListener('input', function (e) {
       var el = e.target;
-      if (el.dataset.f && S.form) { S.form[el.dataset.f] = el.value; S.dirty = true; }
+      if (el.dataset.f && S.form) { S.form[el.dataset.f] = el.value; S.dirty = true; saveRepDraft(); }
       if (el.dataset.pf && S.pf) { S.pf[el.dataset.pf] = el.value; S.dirty = true; }
       if (el.dataset.change === 'ch-q') { clearTimeout(S._qT); S._qT = setTimeout(function () { CHANGE['ch-q'](el); }, 250); }
     });
     document.addEventListener('change', function (e) {
       var el = e.target;
       if (el.dataset.f && S.form) {
-        S.form[el.dataset.f] = el.value; S.dirty = true;
+        S.form[el.dataset.f] = el.value; S.dirty = true; saveRepDraft();
         if (el.dataset.f === 'employee') { S.form.channel = ''; render(); }
-        if (el.dataset.f === 'channel' || el.dataset.f === 'date') render();
+        if (el.dataset.f === 'channel' || el.dataset.f === 'date' || el.dataset.f === 'edit') render();
       }
       if (el.dataset.pf && S.pf) {
         S.pf[el.dataset.pf] = el.value; S.dirty = true;
@@ -3181,9 +3890,12 @@
           render();
         }).catch(function (e) { sb.disabled = false; sb.textContent = 'Coba lagi'; handleErr(e); });
       } else if (kind === 'pin') {
+        if (S._pinBusy) return;
+        S._pinBusy = true;
         API.call('changePin', { oldPin: f.old, newPin: f.new }).then(function (res) {
+          S._pinBusy = false;
           S.token = res.token; Store.set('token', res.token); form.reset(); toast('PIN berhasil diganti ✓');
-        }).catch(handleErr);
+        }).catch(function (e) { S._pinBusy = false; handleErr(e); });
       } else if (kind === 'server') {
         var u = String(f.url || '').trim();
         if (u && !/^https:\/\/script\.google(usercontent)?\.com\//.test(u)) return toast('URL harus dari script.google.com', 'error');
@@ -3202,8 +3914,32 @@
     });
   }
 
+  /* ---------------- 1.8: PENGAMAN ERROR & KONEKSI ---------------- */
+  function guardErrors() {
+    var last = 0, MSG = 'Terjadi kesalahan kecil di aplikasi. Bila tampilan tidak berubah, muat ulang halaman.';
+    function friendly(msg) { if (Date.now() - last < 8000) return; last = Date.now(); try { toast(msg, 'error'); } catch (e) { } }
+    window.addEventListener('error', function (e) {
+      if (!e || !e.message || /ResizeObserver|Script error/i.test(e.message)) return;
+      if (e.filename && e.filename.indexOf(location.origin) !== 0) return; // error dari ekstensi browser
+      console.error(e.error || e.message);
+      friendly(MSG);
+    });
+    window.addEventListener('unhandledrejection', function (e) {
+      var r = e && e.reason;
+      console.error(r);
+      if (r && r.code === 'AUTH') { handleErr(r); return; }
+      friendly(r && r.message && r.name !== 'TypeError' && r.name !== 'ReferenceError' ? r.message : MSG);
+    });
+    window.addEventListener('offline', function () { renderNetSlot(); });
+    window.addEventListener('online', function () {
+      renderNetSlot();
+      if (S.token && !API.isDemo()) { toast('Internet tersambung kembali ✓'); loadData(true); }
+    });
+  }
+
   /* ---------------- START ---------------- */
   function start() {
+    guardErrors();
     setInterval(function () {
       var els = document.querySelectorAll('[data-clock]');
       if (!els.length || !S.data) return;
