@@ -314,7 +314,26 @@
     ['OFFICE_LAT', 'OFFICE_LNG'].forEach(function (k) { if (o[k] != null) o[k] = String(o[k]).trim().replace(',', '.'); });
     return o;
   }
-  function normData(d) { if (d) { normCfg(d.config); if (d.admin) normCfg(d.admin.configRaw); } return d; }
+  function normData(d) { if (d) { normCfg(d.config); if (d.admin) normCfg(d.admin.configRaw); dropTrialData(d); } return d; }
+  /** Tanggal go-live bila sudah berjalan (hari ini >= GO_LIVE_DATE); '' selama masa uji coba. */
+  function goLiveCut(c, t) {
+    var g = String((c && c.GO_LIVE_DATE) || '').slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(g) && t && t >= g ? g : '';
+  }
+  /** 1.9.1: data sebelum tanggal go-live = uji coba → tidak ditampilkan & tidak dihitung di mana pun. */
+  function dropTrialData(d) {
+    var tz = (d.config && d.config.TIMEZONE) || 'Asia/Jakarta', t = d.today;
+    if (!t) { try { t = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()); } catch (e) { t = new Date().toISOString().slice(0, 10); } }
+    var g = goLiveCut(d.config, t);
+    if (!g) return;
+    ['reports', 'attendance', 'progressLog', 'taskLog', 'alerts'].forEach(function (k) {
+      if (Array.isArray(d[k])) d[k] = d[k].filter(function (x) { return String((x && x.date) || '') >= g; });
+    });
+    if (Array.isArray(d.permissions)) d.permissions = d.permissions.filter(function (p) { return String((p && (p.to || p.from)) || '') >= g; });
+    ['projects', 'tasks'].forEach(function (k) {
+      if (Array.isArray(d[k])) d[k] = d[k].filter(function (x) { return x && (x.status === 'ACTIVE' || !x.end || x.end >= g); });
+    });
+  }
   normData(S.data);
 
   function loadData(silent) {
@@ -1388,6 +1407,7 @@
 
   function dayStatus(name, date) {
     var c = attCfg(), rec = attOf(name, date), ex = excuseFor(name, date), work = KPI.isWorkday(date, c);
+    if (c.goLive && date < c.goLive && today() >= c.goLive) return { code: 'NA', label: 'Uji coba (tidak dihitung)', cls: 'st-none' };
     if (ex && work) return { code: ex.type, label: PERM[ex.type].label, cls: 'st-none' };
     if (rec && rec.in) {
       if (!work) return { code: 'LIBUR_MASUK', label: 'Masuk hari libur', cls: 'st-none' };
@@ -3553,7 +3573,9 @@
   function hasOutcomeTarget(c) { return !!c && ((Number(c.targetViews) || 0) > 0 || (Number(c.targetSubs) || 0) > 0); }
   function channelOutcomeNow(c) {
     var t = today();
-    return KPI.channelOutcome(c, (D().channelStats || {})[c.key], KPI.monthStart(t), t, t);
+    var from = KPI.monthStart(t), g = goLiveCut(cfg(), t);
+    if (g && g > from) from = g; // pertumbuhan dihitung mulai go-live
+    return KPI.channelOutcome(c, (D().channelStats || {})[c.key], from, t, t);
   }
   function outcomeCard(c) {
     if (!hasOutcomeTarget(c)) return '';

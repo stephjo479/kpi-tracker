@@ -1562,7 +1562,9 @@ I18N.add({
   'Untuk tugas yang salah dibuat: riwayat progresnya ikut terhapus dan KPI dihitung ulang. Untuk mengakhiri tugas, pakai "Tandai selesai" atau "Hentikan".': ['For tasks created by mistake: their progress history is deleted too and the KPI is recalculated. To end a task, use "Mark as done" or "Stop".', '잘못 만든 업무용입니다: 진척 기록도 함께 삭제되고 KPI가 다시 계산됩니다. 업무를 끝내려면 "완료로 표시" 또는 "중단"을 사용하세요.'],
   'Tugas dihapus.': ['Task deleted.', '업무를 삭제했습니다.'],
   'Tambah / ubah tugas khusus': ['Add / edit special task', '특별 업무 추가 / 수정'],
-  'Hapus tugas khusus': ['Delete special task', '특별 업무 삭제']
+  'Hapus tugas khusus': ['Delete special task', '특별 업무 삭제'],
+  'Uji coba (tidak dihitung)': ['Trial (not counted)', '시범 운영 (미반영)'],
+  'Perbaikan: data sebelum tanggal go-live (12 Oktober 2026) adalah masa uji coba — sekarang tidak lagi ditampilkan atau dihitung di mana pun (riwayat & total laporan, absensi, proyek, pantauan, rapor). Hari-hari itu ditandai "Uji coba".': ['Fix: data before the go-live date (12 October 2026) belongs to the trial period — it is no longer shown or counted anywhere (report history & totals, attendance, projects, work monitoring, report cards). Those days are marked "Trial".', '수정: 정식 시작일(2026년 10월 12일) 이전 데이터는 시범 운영 기간이므로 이제 어디에도 표시되거나 계산되지 않습니다 (보고 기록·합계, 근태, 프로젝트, 업무 모니터링, 평가표). 해당 날짜는 "시범 운영"으로 표시됩니다.']
 });
 I18N.patterns([
   ['Generate {#0}', 'Generated {0}', '생성 {0}'],
