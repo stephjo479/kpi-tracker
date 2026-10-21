@@ -1601,4 +1601,17 @@ I18N.patterns([
   ['Tugas "{0}" baru mulai {1}.', 'Task "{0}" only starts on {1}.', '"{0}" 업무는 {1}에 시작합니다.']
 ]);
 
+/* =================== 1.10.0: OLTI & riwayat penugasan =================== */
+I18N.add({
+  'Pekerjaan baru OLTI (All-TTS Movie, bahasa Korea, 1–2 menit): Ardi, Aldis, Jati, Fahad & Tarissa fokus OLTI mulai 20 Oktober dengan target 3 video/hari. Lapor seperti biasa — pilih "OLTI — All-TTS Movie (Korea)", isi jumlah video selesai & tempel link Google Drive (folder namamu di Drive Zul).': ['New OLTI job (All-TTS Movie, Korean, 1–2 minutes): Ardi, Aldis, Jati, Fahad & Tarissa focus on OLTI from 20 October with a target of 3 videos/day. Report as usual — choose "OLTI — All-TTS Movie (Korea)", enter finished videos & paste the Google Drive link (your folder in Zul’s Drive).', '새 업무 OLTI (All-TTS Movie, 한국어, 1–2분): Ardi, Aldis, Jati, Fahad, Tarissa는 10월 20일부터 OLTI에 집중하며 목표는 하루 3편입니다. 평소처럼 보고하세요 — "OLTI — All-TTS Movie (Korea)"를 선택하고 완료 영상 수와 Google Drive 링크(Zul 드라이브의 본인 폴더)를 붙여 넣습니다.'],
+  'Riwayat penugasan: menambah, melepas, mengalihkan, atau mengubah target seseorang di channel kini berlaku mulai hari itu. KPI hari-hari sebelumnya tetap memakai penugasan lama (channel lama ditandai "s/d tanggal").': ['Assignment history: adding, removing, transferring or changing someone’s target in a channel now takes effect from that day. KPI for earlier days keeps the old assignment (old channels are marked "until date").', '배정 기록: 채널에서 담당자 추가·해제·이관·목표 변경은 이제 그날부터 적용됩니다. 이전 날짜의 KPI는 기존 배정을 그대로 사용합니다 (이전 채널은 "~까지"로 표시).'],
+  'Bukan channel YouTube — video dikirim ke Google Drive Zul (folder nama masing-masing), lalu diunggah Zul ke channel yang diaktifkan.': ['Not a YouTube channel — videos are sent to Zul’s Google Drive (a folder per person), then Zul uploads them to the channels being activated.', '유튜브 채널이 아닙니다 — 영상은 Zul의 Google Drive(개인별 폴더)로 보내고, Zul이 활성화할 채널에 업로드합니다.'],
+  'Video OLTI (All-TTS Movie) berbahasa Korea, durasi 1–2 menit per video. Kirim ke Google Drive Zul di folder namamu, lalu tempel link Drive di laporan.': ['OLTI videos (All-TTS Movie) in Korean, 1–2 minutes per video. Send them to Zul’s Google Drive in your folder, then paste the Drive link in your report.', '한국어 OLTI 영상(All-TTS Movie), 영상당 1–2분. Zul의 Google Drive 본인 폴더에 보내고 보고에 드라이브 링크를 붙여 넣으세요.'],
+  'Satu link per baris (YouTube / Google Drive)': ['One link per line (YouTube / Google Drive)', '한 줄에 링크 하나 (YouTube / Google Drive)'],
+  'Riwayat tim:': ['Team history:', '팀 기록:']
+});
+I18N.patterns([
+  ['s/d {0}', 'until {0}', '{0}까지']
+]);
+
 I18N.start();

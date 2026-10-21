@@ -4,9 +4,10 @@
  * spreadsheet terhubung. Login demo: OWNER / 1234 (admin), PAK BOS / 9999 (pimpinan), RINA / 1111 (karyawan),
  * MAYA / 6666 (Shorts) & NINA / 7777 (AI Drama long-form harian) — berdua memegang channel "Drama Recap (Client)".
  * SARI / 3333 punya tugas khusus di luar channel (riset monetisasi).
+ * DIMAS / 4444 & LUTFI / 5555 pindah ke pekerjaan OLTI (All-TTS Movie) 2 hari lalu — channel lama tersimpan di riwayat.
  */
 var Demo = (function () {
-  var KEY = 'demoDB_v10';
+  var KEY = 'demoDB_v11';
   var NAMES = { DEV: 'DEV CHANNEL', STAFF: 'STAFF CHANNEL', CLIENT: 'CLIENT CHANNEL' };
 
   function pad(n) { return (n < 10 ? '0' : '') + n; }
@@ -38,7 +39,8 @@ var Demo = (function () {
       ['shorts.lucu@contoh.com', 'STAFF CHANNEL', 'https://youtube.com/@shorts.lucu', 10, 'LUTFI', 'Rp 3.200.000', '10th every month', ''],
       ['@golf.daily (Client)', 'CLIENT CHANNEL', 'https://youtube.com/@golf.daily', 2, 'BAYU', 'Rp 3.500.000', '10th every month', '2 item: 1 video long-form, 1 thumbnail.'],
       ['Drama Recap (Client)', 'CLIENT CHANNEL', 'https://youtube.com/@drama.recap', 5, 'MAYA', 'Rp 3.500.000', '10th every month', 'Satu channel, dua pekerjaan: Maya = shorts, Nina = AI drama long-form.'],
-      ['Variety Show (Client)', 'CLIENT CHANNEL', '', 5, 'MAYA', 'Rp 3.500.000', '10th every month', '']
+      ['Variety Show (Client)', 'CLIENT CHANNEL', '', 5, 'MAYA', 'Rp 3.500.000', '10th every month', ''],
+      ['OLTI — All-TTS Movie (Korea)', 'STAFF CHANNEL', '', 6, 'DIMAS', '', '', 'Video OLTI (All-TTS Movie) berbahasa Korea, durasi 1–2 menit per video. Kirim ke Google Drive Zul di folder namamu, lalu tempel link Drive di laporan.']
     ];
     var channels = rows.map(function (x, i) {
       return {
@@ -56,13 +58,27 @@ var Demo = (function () {
       } else if (c.kpiMode === 'PROGRESS') c.members = [{ name: c.employees[0], label: 'Long-form', mode: 'PROGRESS', target: '', notes: '' }];
       else c.members = [];
     });
+    // 1.10: contoh pivot ke OLTI — channel lama Dimas & Lutfi berakhir kemarin lusa (riwayat), OLTI mulai 2 hari lalu
+    var pivot = KPI.addDays(t, -2);
+    channels.forEach(function (c) {
+      var who = c.key === 'film.pendek@contoh.com' ? 'DIMAS' : c.key === 'shorts.lucu@contoh.com' ? 'LUTFI' : '';
+      if (who) { c.employees = []; c.members = []; c.pastMembers = [{ name: who, label: '', mode: 'COUNT', target: c.target, from: '', to: KPI.addDays(pivot, -1) }]; }
+      if (c.key.indexOf('OLTI') === 0) {
+        c.employees = ['DIMAS', 'LUTFI']; c.minDuration = 1;
+        c.linkNote = 'Bukan channel YouTube — video dikirim ke Google Drive Zul (folder nama masing-masing), lalu diunggah Zul ke channel yang diaktifkan.';
+        c.members = ['DIMAS', 'LUTFI'].map(function (n) { return { name: n, label: 'OLTI (All-TTS Movie)', mode: 'COUNT', target: 3, notes: '', from: pivot, to: '' }; });
+      }
+    });
     var reports = [];
     var skill = { RINA: 0.98, BAYU: 0.82, SARI: 0.9, DIMAS: 0.7, LUTFI: 1.02, MAYA: 0.93, NINA: 0.9 };
     for (var k = 45; k >= 0; k--) {
       var d = KPI.addDays(t, -k);
       if (KPI.dow(d) > 5) continue;
       channels.forEach(function (c) {
-        KPI.channelMembers(c).forEach(function (m) {
+        KPI.channelMembers(c).map(function (m) { return { m: m, from: m.from, to: m.to }; })
+          .concat((c.pastMembers || []).map(function (p) { return { m: p, from: p.from, to: p.to }; })).forEach(function (a) {
+          var m = a.m;
+          if ((a.from && d < a.from) || (a.to && d > a.to)) return; // di luar masa penugasan
           if (m.mode !== 'COUNT') return; // tugas long-form dinilai dari progres proyek
           var e = m.name;
           if (k === 0 && r() < 0.45) return;
@@ -72,7 +88,7 @@ var Demo = (function () {
           var gen = e === 'NINA' && r() < 0.6 ? 1 + Math.floor(r() * 2) : 0, edit = e === 'NINA' && r() < 0.5 ? 1 : 0;
           reports.push({
             id: 'D' + reports.length, ts: d + 'T10:00:00Z', date: d, employee: e, channel: c.key, division: c.division,
-            task: c.indicator, qty: q, links: q ? 'https://youtube.com/shorts/demo' + reports.length : '', notes: '', updatedBy: e,
+            task: c.indicator, qty: q, links: q ? (c.key.indexOf('OLTI') === 0 ? 'https://drive.google.com/drive/folders/olti-' + e.toLowerCase() : 'https://youtube.com/shorts/demo' + reports.length) : '', notes: '', updatedBy: e,
             gen: gen, genFor: gen ? (r() < 0.6 ? 'BESOK' : 'HARI_INI') : '', edit: edit, editPct: edit ? 30 + Math.floor(r() * 6) * 10 : ""
           });
         });

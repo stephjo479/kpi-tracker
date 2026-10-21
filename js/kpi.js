@@ -27,6 +27,10 @@
  *   Orang ber-mode PROGRESS mendapat target 1 unit per hari kerja selama punya proyek aktif (dibagi rata
  *   bila ia punya proyek aktif di beberapa channel pada hari yang sama).
  *
+ *   RIWAYAT PENUGASAN (1.10) — setiap baris pembagian tugas boleh punya MULAI / SELESAI. Target hanya dihitung pada hari
+ *   di dalam rentang itu. Orang yang sudah dilepas dari channel (c.pastMembers) tetap diberi target sampai tanggal SELESAI,
+ *   sehingga KPI hari-hari sebelum perubahan tidak ikut berubah.
+ *
  *   TUGAS KHUSUS DI LUAR CHANNEL (1.9) — dibuat admin per karyawan (sheet TUGAS KARYAWAN), mis. riset:
  *     - Cara ukur PROGRESS: 100% dibagi rata ke hari kerja dari MULAI s/d DEADLINE. Capaian = kenaikan progres ÷ progres yang diharapkan.
  *     - Cara ukur COUNT   : target jumlah per hari kerja (mulai s/d deadline / selesai). Ikut dihitung seperti output channel.
@@ -105,7 +109,8 @@ var KPI = (function () {
       var g = given[n] || {}, gm = up(g.mode);
       var mode = gm === 'PROGRESS' || gm === 'COUNT' ? gm : chMode;
       var t = g.target === '' || g.target == null || !isFinite(Number(g.target)) ? null : Math.max(0, Number(g.target));
-      return { name: n, label: String(g.label || '').trim(), mode: mode, target: mode === 'COUNT' ? t : null, notes: String(g.notes || ''), custom: !!given[n] };
+      return { name: n, label: String(g.label || '').trim(), mode: mode, target: mode === 'COUNT' ? t : null, notes: String(g.notes || ''), custom: !!given[n],
+        from: String(g.from || '').slice(0, 10), to: String(g.to || '').slice(0, 10) };
     });
     var cnt = list.filter(function (m) { return m.mode === 'COUNT'; });
     var free = cnt.filter(function (m) { return m.target == null; });
@@ -289,18 +294,31 @@ var KPI = (function () {
     function hasActiveProject(n, d, key) { return (proj[n] || []).some(function (x) { return x.start <= d && x.end >= d && (key == null || x.channel === key); }); }
     function isProg(c) { return !!c && up(c.kpiMode) === 'PROGRESS'; }
 
-    // Pembagian tugas per orang di dalam channel
-    var memMode = {}, progKeys = {};
+    // Pembagian tugas per orang di dalam channel (+ riwayat penugasan 1.10)
+    var memMode = {}, progKeys = {}, assignments = [];
     (opts.channels || []).forEach(function (c) {
-      channelMembers(c).forEach(function (m) {
-        (memMode[m.name] = memMode[m.name] || {})[c.key] = m.mode;
-        if (m.mode === 'PROGRESS') (progKeys[m.name] = progKeys[m.name] || []).push(c.key);
+      var chMode = up(c.kpiMode) === 'PROGRESS' ? 'PROGRESS' : 'COUNT';
+      channelMembers(c).forEach(function (m) { assignments.push({ c: c, m: m, from: m.from || '', to: m.to || '', past: false }); });
+      (c.pastMembers || []).forEach(function (p) {
+        var n = up(p && p.name), to = String((p && p.to) || '').slice(0, 10);
+        if (!n || !to) return;
+        var pm = up(p.mode), mode = pm === 'PROGRESS' || pm === 'COUNT' ? pm : chMode;
+        var t = Number(p.target);
+        assignments.push({ c: c, m: { name: n, label: String(p.label || '').trim(), mode: mode, target: mode === 'COUNT' ? (isFinite(t) && t > 0 ? t : 0) : null },
+          from: String(p.from || '').slice(0, 10), to: to, past: true });
       });
+    });
+    function inRange(a, d) { return (!a.from || d >= a.from) && (!a.to || d <= a.to); }
+    assignments.forEach(function (a) {
+      var x = memMode[a.m.name] = memMode[a.m.name] || {};
+      if (!a.past || !(a.c.key in x)) x[a.c.key] = a.m.mode; // penugasan sekarang menang atas riwayat
+      if (a.m.mode === 'PROGRESS') (progKeys[a.m.name] = progKeys[a.m.name] || []).push(a);
     });
     function isProgFor(name, key) { var x = memMode[up(name)]; return x && x[key] ? x[key] === 'PROGRESS' : isProg(chByKey[key]); }
     /** Channel PROGRESS milik orang ini yang punya proyek aktif pada hari d. */
     function activeProgKeys(n, d) {
-      var keys = progKeys[n] || [];
+      var keys = [];
+      (progKeys[n] || []).forEach(function (a) { if (inRange(a, d) && keys.indexOf(a.c.key) < 0) keys.push(a.c.key); });
       var act = keys.filter(function (k) { return hasActiveProject(n, d, k); });
       if (!act.length && keys.length && hasActiveProject(n, d)) act = [keys[0]];
       return act;
@@ -329,31 +347,36 @@ var KPI = (function () {
       emp(e.name);
     });
 
-    (opts.channels || []).forEach(function (c) {
-      channelMembers(c).forEach(function (m) {
-        var e = emp(m.name); if (!e) return;
-        var row = chRow(e, c.key);
-        row.assigned = true; row.mode = m.mode; row.label = m.label;
-        e.divisions[c.division] = true;
-        if (m.mode === 'PROGRESS') {
-          e.nProg++;
-          e.days.forEach(function (d) {
-            var act = activeProgKeys(e.name, d);
-            if (act.indexOf(c.key) < 0) return;
-            var t = 1 / act.length;
-            row.target += t; e.progTarget += t;
-            if (!e.daily[d]) e.daily[d] = { t: 0, a: 0 };
-            e.daily[d].t += t;
-          });
-          return;
-        }
-        e.nCount++;
+    assignments.forEach(function (a) {
+      var c = a.c, m = a.m;
+      // penugasan yang seluruhnya di luar periode tidak dihitung
+      if ((a.to && a.to < from) || (a.from && a.from > effTo)) return;
+      var e = emp(m.name); if (!e) return;
+      var row = chRow(e, c.key);
+      row.assigned = true;
+      if (!a.past) { row.mode = m.mode; row.label = m.label; row.current = true; delete row.until; }
+      else if (!row.current) { row.mode = m.mode; row.label = row.label || m.label; row.until = row.until && row.until > a.to ? row.until : a.to; }
+      e.divisions[c.division] = true;
+      if (m.mode === 'PROGRESS') {
+        e.nProg++;
         e.days.forEach(function (d) {
-          var t = dailyTarget(m.target, d, cfg);
-          row.target += t; e.target += t;
+          if (!inRange(a, d)) return;
+          var act = activeProgKeys(e.name, d);
+          if (act.indexOf(c.key) < 0) return;
+          var t = 1 / act.length;
+          row.target += t; e.progTarget += t;
           if (!e.daily[d]) e.daily[d] = { t: 0, a: 0 };
           e.daily[d].t += t;
         });
+        return;
+      }
+      e.nCount++;
+      e.days.forEach(function (d) {
+        if (!inRange(a, d)) return;
+        var t = dailyTarget(m.target, d, cfg);
+        row.target += t; e.target += t;
+        if (!e.daily[d]) e.daily[d] = { t: 0, a: 0 };
+        e.daily[d].t += t;
       });
     });
 
@@ -459,7 +482,7 @@ var KPI = (function () {
         }
         c.target = Math.round(c.target * 100) / 100;
         c.achievement = c.target > 0 ? c.actual / c.target : null;
-        c.outcome = c.assigned && !c.task ? outcomeOf(key) : null;
+        c.outcome = c.assigned && !c.task && !c.until ? outcomeOf(key) : null;
         return c;
       });
       var oc = chans.filter(function (c) { return c.outcome && c.outcome.achievement != null; });

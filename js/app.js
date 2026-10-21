@@ -975,7 +975,7 @@
         (selCh && !progHere ? '<div class="hint">Target ' + esc(String(cfg().TARGET_PERIOD || 'DAILY').toLowerCase() === 'daily' ? 'harian' : String(cfg().TARGET_PERIOD).toLowerCase()) + ': <b>' + fmtN(memberTarget(selCh, emp)) + '</b> · sudah dilaporkan tanggal ini: <b>' + fmtN(channelActual(selCh.key, f.date, f.date, emp || null)) + '</b>' + (selCh.minDuration ? ' · <b>durasi minimal ' + fmtN(selCh.minDuration) + ' menit per video</b>' : '') + (selCh.notes ? ' · ' + esc(selCh.notes) : '') + '</div>' : '') + progNote + '</div>' +
         '<div class="field"><label>Jumlah selesai <span class="muted">(dihitung KPI)</span></label><div class="stepper"><button type="button" data-act="qty" data-v="-1" aria-label="Kurangi">−</button><input type="number" inputmode="decimal" min="0" step="1" data-f="qty" value="' + esc(f.qty) + '" required><button type="button" data-act="qty" data-v="1" aria-label="Tambah">+</button></div></div>' +
         (progHere ? '' : repDetailBox(f)) +
-        '<div class="field"><label>Link video / hasil kerja</label><textarea class="input" data-f="links" rows="3" placeholder="Satu link per baris">' + esc(f.links) + '</textarea></div>' +
+        '<div class="field"><label>Link video / hasil kerja</label><textarea class="input" data-f="links" rows="3" placeholder="Satu link per baris (YouTube / Google Drive)">' + esc(f.links) + '</textarea></div>' +
         '<div class="field"><label>Catatan <span class="muted">(opsional)</span></label><textarea class="input" data-f="notes" rows="2" placeholder="Kendala, info tambahan…">' + esc(f.notes) + '</textarea></div>' +
         '<div class="row"><button class="btn grow" id="report-submit">' + icon(editing ? 'check' : 'plus') + (editing ? 'Simpan perubahan' : 'Kirim laporan') + '</button>' +
         (editing ? '<button type="button" class="btn ghost" data-act="cancel-edit">Batal</button>' : '') + '</div></form>') + '</div>';
@@ -1142,7 +1142,7 @@
       var up = ch ? uploadsIn(ch, res.from, res.effTo) : 0;
       var u = c.mode === 'PROGRESS' ? ' <span class="xs muted">unit</span>' : c.mode === 'TASK' ? '%' : '';
       return '<tr><td><div class="row">' + (ch ? avatar(ch, 'sm') : '') + '<div class="col"><span class="bold ellipsis" style="max-width:220px">' + esc(ch ? chTitle(ch) : c.name) + '</span>' +
-        '<span class="row wrap" style="gap:4px">' + (c.task ? '<span class="badge pos-MANAGER">' + icon('report') + 'Tugas khusus</span>' : divBadge(c.division) + (c.label ? '<span class="badge st-none">' + esc(c.label) + '</span>' : '')) + (c.mode === 'PROGRESS' ? '<span class="badge pos-MANAGER">' + icon('trend') + 'Progres proyek</span>' : '') + '</span></div></div></td>' +
+        '<span class="row wrap" style="gap:4px">' + (c.task ? '<span class="badge pos-MANAGER">' + icon('report') + 'Tugas khusus</span>' : divBadge(c.division) + (c.label ? '<span class="badge st-none">' + esc(c.label) + '</span>' : '')) + (c.until ? '<span class="badge st-warning">' + icon('clock') + 's/d ' + esc(fmtDate(c.until)) + '</span>' : '') + (c.mode === 'PROGRESS' ? '<span class="badge pos-MANAGER">' + icon('trend') + 'Progres proyek</span>' : '') + '</span></div></div></td>' +
         '<td class="num">' + fmtN(c.target) + u + '</td><td class="num bold">' + fmtN(c.actual) + u + '</td><td class="num">' + fmtPct(c.achievement) + '</td>' +
         '<td class="num">' + (ch && ytOf(ch) && ytOf(ch).status === 'OK' ? fmtN(up) : '<span class="muted">—</span>') + '</td>' +
         (anyOut ? '<td class="num">' + (c.outcome ? fmtPct(c.outcome.achievement) + (c.outcome.views != null ? '<div class="xs muted">' + signed(c.outcome.views, true) + ' / ' + fmtC(c.outcome.targetViews) + ' views</div>' : '') : '<span class="muted">—</span>') + '</td>' : '') + '</tr>';
@@ -1318,7 +1318,7 @@
   /** Kartu "Tim & pembagian tugas": siapa mengerjakan apa + capaian hari ini & bulan ini. */
   function teamCard(c) {
     var list = membersOf(c), me = S.user && S.user.name, all = seeAll();
-    if (!list.length && !isAdmin()) return '';
+    if (!list.length && !isAdmin() && !(c.pastMembers || []).length) return '';
     var kT = kpiPeriod('today'), kM = kpiPeriod('month');
     function rowOf(k, name) { var e = k.list.filter(function (x) { return x.name === name; })[0]; return e ? e.channels.filter(function (x) { return x.key === c.key; })[0] || null : null; }
     var rows = list.map(function (m) {
@@ -1337,8 +1337,16 @@
       : list.length > 1 && list.some(function (m) { return !m.custom; }) && isAdmin() ? '<div class="notice small mt-sm">Pembagian tugas belum diatur — semua orang memakai cara hitung channel & target dibagi rata. Tekan "Atur pembagian tugas" untuk menentukan jenis video & target tiap orang.</div>' : '';
     return '<div class="card mt"><div class="card-head"><div class="col"><h2 class="row">' + icon('users') + 'Tim & pembagian tugas</h2><span class="sub">Siapa mengerjakan apa di channel ini</span></div>' +
       (isAdmin() ? '<button class="btn ghost sm" data-act="edit-channel" data-key="' + esc(c.key) + '">' + icon('edit') + 'Atur pembagian tugas</button>' : '') + '</div>' +
-      '<div class="team-list">' + rows + '</div>' + hint +
+      '<div class="team-list">' + rows + '</div>' + hint + teamHistory(c) +
       (!all && list.some(function (m) { return m.name !== me; }) ? '<div class="xs muted mt-sm">Capaian rekan kerja bersifat privat.</div>' : '') + '</div>';
+  }
+  /** 1.10: riwayat pemegang channel (penugasan yang sudah berakhir). */
+  function teamHistory(c) {
+    var past = (c.pastMembers || []).slice().sort(function (a, b) { return (b.to || '').localeCompare(a.to || ''); }).slice(0, 8);
+    if (!past.length) return '';
+    return '<div class="xs muted mt-sm"><span>Riwayat tim:</span> <span translate="no">' + past.map(function (p) {
+      return esc(cap(p.name)) + (p.label ? ' · ' + esc(p.label) : '') + ' (' + (p.from ? esc(fmtDate(p.from)) : '…') + ' – ' + esc(fmtDate(p.to)) + ')';
+    }).join(', ') + '</span></div>';
   }
   /** Kartu "Proyek video channel ini": progres long-form/shorts yang sedang dikerjakan + riwayat. */
   function channelProjectsCard(c) {
@@ -3634,7 +3642,7 @@
     var chRows = e && e.channels.length ? '<table class="rp-table"><thead><tr><th>Channel</th><th class="num">Target</th><th class="num">Aktual</th><th class="num">Capaian</th><th class="num">Hasil channel</th></tr></thead><tbody>' +
       e.channels.map(function (x) {
         var ch = channelByKey(x.key), o = x.outcome, u = x.mode === 'PROGRESS' ? ' unit' : x.mode === 'TASK' ? '%' : '';
-        return '<tr><td>' + esc(ch ? chTitle(ch) : x.name) + (x.label || x.mode === 'PROGRESS' ? '<div class="xs muted">' + esc(x.label || '') + (x.label && x.mode === 'PROGRESS' ? ' · ' : '') + (x.mode === 'PROGRESS' ? 'progres proyek' : '') + '</div>' : '') + '</td><td class="num">' + fmtN(x.target) + u + '</td><td class="num">' + fmtN(x.actual) + u + '</td><td class="num">' + fmtPct(x.achievement) + '</td>' +
+        return '<tr><td>' + esc(ch ? chTitle(ch) : x.name) + (x.label || x.mode === 'PROGRESS' ? '<div class="xs muted">' + esc(x.label || '') + (x.label && x.mode === 'PROGRESS' ? ' · ' : '') + (x.mode === 'PROGRESS' ? 'progres proyek' : '') + '</div>' : '') + (x.until ? '<div class="xs muted">s/d ' + esc(fmtDate(x.until)) + '</div>' : '') + '</td><td class="num">' + fmtN(x.target) + u + '</td><td class="num">' + fmtN(x.actual) + u + '</td><td class="num">' + fmtPct(x.achievement) + '</td>' +
           '<td class="num">' + (o ? fmtPct(o.achievement) + (o.views != null ? '<div class="xs muted">' + signed(o.views, true) + ' views</div>' : '') : '—') + '</td></tr>';
       }).join('') + '</tbody></table>' : '';
     var attHtml = a ? '<div class="rp-grid">' +
